@@ -283,7 +283,7 @@ export default {
 
     for (const name of [
       'UserMessage', 'AgentStart', 'IterationStart', 'thinking',
-      'content', 'tool_call', 'ToolExecutionStart', 'ToolExecutionEnd',
+      'tool_call', 'ToolExecutionStart', 'ToolExecutionEnd', 'content',
     ]) {
       await appendMainPill(name, { instant: true });
     }

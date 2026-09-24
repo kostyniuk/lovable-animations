@@ -244,7 +244,7 @@ export default {
     function announceDraining() {
       ctx.spawn(async () => {
         for (const n of nodes) {
-          if (n.status === 'running') setNodeStatus(n, 'draining · finishing in-flight run', colorOf('revert'));
+          if (n.status === 'running') setNodeStatus(n, 'draining · in-flight run', colorOf('revert'));
           else if (n.status !== 'suspended' && n.status !== 'resuming') setNodeStatus(n, 'draining', colorOf('revert'));
         }
         await ctx.wait(1);
@@ -394,7 +394,7 @@ export default {
         await ctx.beat('A resumed agent rebuilds its sandbox from the repo. The project\'s durable state is the repo, not the box.');
       }
 
-      await ctx.beat('ACP sends a fresh activation with a <em>resume</em> reason — watch it travel the wire to the node that picks it up.');
+      await ctx.beat('ACP sends a fresh activation with a <em>resume</em> reason — any node can pick it up, check the inbox, and run the next iteration.');
       const candidates = nodes.filter((n) => n !== oldNode);
       const target = candidates[Math.floor(rand() * candidates.length)];
       // oldNode's run is gone the moment someone else picks up the resume —

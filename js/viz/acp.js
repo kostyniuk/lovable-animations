@@ -243,7 +243,9 @@ async function runCase(ctx, world, kind) {
   }
 
   stopParentTicking(world);
-  await ctx.beat('Losing or duplicating an activation is harmless — the inbox is the source of truth.', 1200);
+  if (kind !== 'asleep') {
+    await ctx.beat('Losing or duplicating an activation is harmless — the inbox is the source of truth.', 1200);
+  }
   setParentStatus(ctx, world, 'asleep');
 }
 

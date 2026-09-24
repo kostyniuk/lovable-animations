@@ -21,7 +21,7 @@ const IDLE_CAPTIONS = [
 const ACTIVITY = {
   user: 'UserMessage received',
   iter: 'IterationStart',
-  tool: 'tool_call edit_file',
+  tool: 'tool_call',
   thinking: 'thinking…',
   content: 'writing response…',
   compact: 'compacting context…',
@@ -165,7 +165,7 @@ export default {
         await ctx.wait(3600 + Math.random() * 3200);
         if (!ctx.alive) return;
         const p = projects[Math.floor(Math.random() * projects.length)];
-        say(`a background fork branches off ${p.label}'s trajectory to summarize and keep going`);
+        say(`a background fork branches off ${p.label}'s last iteration boundary — it inherits that history without copying it`);
         await showFork(ctx, p);
       }
     });
@@ -238,10 +238,15 @@ function setStatus(ctx, panel, status) {
 
 function tick(ctx, panel, type) {
   addChip(ctx, panel.lane, ctx.colorOf(type));
-  // The chat agent only ever sees a builder's AgentDone as an incoming result.
-  panel.activity.textContent = panel.isChat && type === 'agent'
-    ? 'admitted a builder result'
-    : ACTIVITY[type] || type;
+  panel.activity.textContent = activityFor(panel, type);
+}
+
+// The chat agent doesn't build: its tool call hands work to a project, and
+// it only ever sees a builder's AgentDone as an incoming result.
+function activityFor(panel, type) {
+  if (panel.isChat && type === 'tool') return 'tool_call send_message_to_project';
+  if (panel.isChat && type === 'agent') return 'admitted a builder result';
+  return ACTIVITY[type] || type;
 }
 
 function setInboxCount(ctx, panel, n) {
@@ -306,12 +311,15 @@ function prefill(ctx, lane, colorPick) {
   for (let i = 0; i < lane.capacity; i++) addChip(ctx, lane, colorPick(), true);
 }
 
-// Absolute point at the rightmost (most recent) chip of a lane.
-function tipPoint(ctx, lane) {
+// Absolute point at the most recent fork-able boundary chip (IterationEnd /
+// AgentDone) — the only places a new head may start.
+function boundaryPoint(ctx, lane) {
   const pos = ctx.getPos(lane.g);
-  const last = lane.ticks[lane.ticks.length - 1];
-  const lx = last ? parseFloat(last.el.getAttribute('x')) + lane.chipW / 2 : lane.pad;
-  return { x: pos.x + lx, y: pos.y + lane.h / 2, chip: last ? last.el : null };
+  const boundary = [ctx.colorOf('iter'), ctx.colorOf('agent')];
+  const last = [...lane.ticks].reverse().find((t) => boundary.includes(t.color));
+  if (!last) return { chip: null };
+  const lx = parseFloat(last.el.getAttribute('x')) + lane.chipW / 2;
+  return { x: pos.x + lx, y: pos.y + lane.h / 2, chip: last.el };
 }
 
 // ---------- fleet nodes ----------
@@ -384,7 +392,7 @@ async function pickFreeNode(ctx, nodes) {
 async function showFork(ctx, p) {
   if (!ctx.alive) return;
   const { COLORS } = ctx;
-  const origin = tipPoint(ctx, p.panel.lane);
+  const origin = boundaryPoint(ctx, p.panel.lane);
   if (!origin.chip) return;
   origin.chip.setAttribute('stroke', COLORS.fork);
   origin.chip.setAttribute('stroke-width', '1.5');

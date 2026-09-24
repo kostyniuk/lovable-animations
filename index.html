@@ -18,7 +18,7 @@
     <p class="lede">
       Three things that are easy to conflate: <strong>what happened</strong>, <strong>what an agent needs to know</strong>,
       and <strong>when it should run</strong>. Lovable keeps them apart — trajectories, context projection, and
-      inboxes + activations — and every animation below is one of those ideas slowed down enough to watch.
+      inboxes + activations. (On a typical weekday, Lovable’s Trajectory System appends roughly half a billion events, covering about 2.6 million user turns.) Every animation below is one of those ideas slowed down enough to watch.
     </p>
     <p class="source">Based on <a href="https://lovable.dev/blog/how-lovable-agents-work-together">lovable.dev/blog/how-lovable-agents-work-together</a>. Every figure runs itself when scrolled into view; use <em>Step</em> and <em>Back</em> to move one beat at a time, and the speed slider to slow things down.</p>
   </header>
@@ -36,6 +36,7 @@
     <span class="t t-compact">compaction</span>
     <span class="t t-notify">ExternalAgentNotification</span>
     <span class="t t-activation">activation</span>
+    <span class="t t-revert">Revert</span>
   </div>
 
   <!-- 1 -->
@@ -59,8 +60,8 @@
   <!-- 2 -->
   <h2><span class="num">02</span>Context is a projection of the trajectory</h2>
   <p>
-    The trajectory is the source of truth, but it isn’t what gets sent to the model. At every
-    <span class="t t-iter">IterationStart</span>, the prompt builder walks the head <em>backwards</em> and renders a prompt.
+    The trajectory is the source of truth, but it isn’t what gets sent to the model. Right after
+    <span class="t t-iter">IterationStart</span> is written, the prompt builder walks the head <em>backwards</em> and renders a prompt.
     How much the model sees, and in what shape, is decided per call.
   </p>
   <p>
@@ -92,7 +93,7 @@
   <h2><span class="num">04</span>Two logs per agent: the inbox and the trajectory</h2>
   <p>
     Each agent has two logs. The <strong>inbox</strong> is where everything sent to it lands — user messages and
-    <span class="t t-notify">ExternalAgentNotification</span>s from other agents. The <strong>trajectory</strong> is what the agent actually did.
+    <span class="t t-notify">ExternalAgentNotification</span>s from other agents or the control plane — a subagent finishing, a message from another agent, a scheduled wake-up. The <strong>trajectory</strong> is what the agent actually did.
   </p>
   <p>
     Other actors only ever write to the inbox. The agent copies unhandled messages onto its trajectory at run start and at
@@ -122,7 +123,7 @@
   <p>
     Right after an <span class="t t-iter">IterationEnd</span>, the trajectory holds everything the next iteration needs. So the loop can just stop:
     the run exits <em>suspended</em>, no <span class="t t-agent">AgentDone</span> is written, and the still-open agent block <em>is</em> the signal that
-    there’s more to do. ACP sends a resume activation and any node continues the same trajectory.
+    there’s more to do. ACP sends a resume activation; any node can pick it up, check the inbox, and continue the same trajectory.
   </p>
   <p>
     During a deploy, nodes drain: most turns finish, the rest suspend at their next boundary and resume on fresh nodes.

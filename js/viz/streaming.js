@@ -392,7 +392,7 @@ export default {
     );
     await closePartial('thinking');
 
-    await ctx.beat('Now a <span class="mono">content</span> block streams the same way — same mechanism, different field.');
+    await ctx.beat('Now a <span class="mono">content</span> block streams the same way — same mechanism, different event kind.');
     await streamBlock('content', 'content', CONTENT_WORDS);
 
     await ctx.beat(
