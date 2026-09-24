@@ -120,8 +120,13 @@ export default {
     fleetXs.forEach((x) => {
       ctx.arrow(x, acpY + 18, x, fleetY, { color: COLORS.dim, width: 1, head: false });
     });
-    ctx.arrow(chat.x + chat.w / 2, chat.y + chat.h, chat.x + chat.w / 2, projectDefs[1].y - 14, {
-      color: COLORS.dim, width: 1, head: false, dash: '2 4',
+    // The chat agent reaches the projects only through ACP: its link runs
+    // down the gutter between the first two projects into the bar.
+    const gutterX = (projectDefs[0].x + projectDefs[0].w + projectDefs[1].x) / 2;
+    const chatLinkY = chat.y + chat.h / 2;
+    ctx.el('path', {
+      d: `M${chat.x},${chatLinkY} L${gutterX},${chatLinkY} L${gutterX},${acpY}`,
+      fill: 'none', stroke: COLORS.dim, 'stroke-width': 1,
     });
 
     // ---------- captions ----------
@@ -165,7 +170,7 @@ export default {
       }
     });
 
-    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, say };
+    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, gutterX, chatLinkY, say };
 
     ctx.button('Send a task', () => ctx.spawn(() => runFanOut(ctx, world)));
 
@@ -433,7 +438,7 @@ async function runFanOut(ctx, world) {
   const chatCx = world.chat.x + world.chat.w / 2, chatCy = world.chat.y + world.chat.h / 2;
   await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
 
-  say(`chat agent sends a task to ${chosen.map((p) => p.label).join(' and ')}`);
+  say(`chat agent calls send_message_to_project for ${chosen.map((p) => p.label).join(' and ')} — ACP delivers it`);
 
   await Promise.all(chosen.map((p) => deliverToProject(ctx, world, p)));
 }
@@ -442,26 +447,11 @@ async function deliverToProject(ctx, world, p) {
   const { colorOf } = ctx;
   const { chat, nodes, say } = world;
 
-  const fromX = chat.x + chat.w / 2, fromY = chat.y + chat.h;
   const trayPoint = p.panel.trayPoint;
-  // Land just beside the tray icon, not on top of it, then merge into it —
-  // avoids covering the icon and the inbox-count badge.
-  const dest = { x: trayPoint.x - 22, y: trayPoint.y };
-  const curve = (p.x + p.w / 2 < chat.x) ? 60 : (p.x > chat.x ? -60 : 0);
-  const path = ctx.arrow(fromX, fromY, dest.x, dest.y, { color: colorOf('notify'), curve, dash: '3 3', width: 1.25 });
-  path.setAttribute('opacity', 0.55);
-
-  const env = envelope(ctx, colorOf('notify'));
-  ctx.setPos(env, fromX, fromY);
-  await ctx.along(env, path, 900, ctx.ease.inOut);
-  path.remove();
-  if (!ctx.alive) { env.remove(); return; }
-  await ctx.move(env, trayPoint.x, trayPoint.y, 200);
-  await ctx.fade(env, 0, 160);
-  env.remove();
+  await viaAcp(ctx, world, p, 'down', 'SendMessage');
   if (!ctx.alive) return;
 
-  say(`ExternalAgentNotification lands in ${p.label}'s inbox — the durable part is done`);
+  say(`ACP appends an ExternalAgentNotification to ${p.label}'s inbox — the durable part is done`);
   setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
   await ctx.pulse(trayPoint.x, trayPoint.y, colorOf('notify'), 16, 400);
 
@@ -485,7 +475,7 @@ async function deliverToProject(ctx, world, p) {
     await ctx.wait(360 + Math.random() * 240);
 
     if (i === Math.floor(totalTicks / 2)) {
-      say(`${p.label} posts a progress update — it lands in the chat agent's inbox`);
+      say(`${p.label} posts a progress update — ACP's NotifyParents appends it to the chat agent's inbox`);
       ctx.spawn(() => sendBack(ctx, world, p, 'notify'));
     }
 
@@ -520,22 +510,10 @@ async function deliverToProject(ctx, world, p) {
 
 async function sendBack(ctx, world, p, kind) {
   if (!ctx.alive) return;
-  const { chat, chatPanel, chatWake } = world;
-  const from = p.panel.trayPoint;
-  const trayPoint = { x: chat.x + chat.w - 30 + 11, y: chat.y + 9 + 8 };
-  const dest = { x: trayPoint.x - 22, y: trayPoint.y };
-  const curve = (p.x + p.w / 2 < chat.x) ? -50 : (p.x > chat.x ? 50 : 0);
+  const { chatPanel, chatWake } = world;
+  const trayPoint = chatPanel.trayPoint;
   const color = ctx.colorOf('notify');
-  const path = ctx.arrow(from.x, from.y, dest.x, dest.y, { color, curve, dash: '3 3', width: 1.1 });
-  path.setAttribute('opacity', 0.5);
-  const env = envelope(ctx, color, kind === 'agent' ? ctx.COLORS.agent : color);
-  ctx.setPos(env, from.x, from.y);
-  await ctx.along(env, path, 850, ctx.ease.inOut);
-  path.remove();
-  if (!ctx.alive) { env.remove(); return; }
-  await ctx.move(env, trayPoint.x, trayPoint.y, 180);
-  await ctx.fade(env, 0, 150);
-  env.remove();
+  await viaAcp(ctx, world, p, 'up', 'NotifyParents', kind === 'agent' ? ctx.COLORS.agent : color);
   if (!ctx.alive) return;
   chatWake();
   tick(ctx, chatPanel, kind === 'agent' ? 'agent' : 'notify');
@@ -543,6 +521,46 @@ async function sendBack(ctx, world, p, kind) {
   await ctx.pulse(trayPoint.x, trayPoint.y, color, 14, 380);
   await ctx.wait(500);
   if (ctx.alive) setInboxCount(ctx, chatPanel, Math.max(0, chatPanel.inboxCount - 1));
+}
+
+// Every message rides the wiring through the control plane: the sender calls
+// ACP (SendMessage / NotifyParents) and ACP appends to the recipient's inbox.
+// Agents never message each other directly.
+async function viaAcp(ctx, world, p, dir, call, accent) {
+  const { COLORS } = ctx;
+  const { chat, acpY, gutterX, chatLinkY } = world;
+  const px = p.x + p.w / 2, boxBottom = p.y + p.h, laneY = acpY - 6;
+  const pts = [
+    [chat.x, chatLinkY], [gutterX, chatLinkY], [gutterX, laneY], [px, laneY], [px, boxBottom],
+  ];
+  if (dir === 'up') pts.reverse();
+  const path = ctx.el('path', {
+    d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'),
+    fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.1, 'stroke-dasharray': '3 3', opacity: 0.5,
+  });
+  // One shared label shows the latest ACP call, so concurrent messages
+  // don't stack their labels on top of each other.
+  if (!world.acpLabel) {
+    world.acpLabel = ctx.el('text', {
+      x: gutterX - 8, y: chatLinkY + 45, 'text-anchor': 'end', class: 'mono',
+      'font-size': 10, fill: COLORS.notify, opacity: 0,
+    });
+    world.acpInFlight = 0;
+  }
+  const label = world.acpLabel;
+  label.textContent = `ACP · ${call}`;
+  label.setAttribute('opacity', 1);
+  world.acpInFlight++;
+  const env = envelope(ctx, COLORS.notify, accent);
+  ctx.setPos(env, pts[0][0], pts[0][1]);
+  try {
+    await ctx.along(env, path, 1500, ctx.ease.inOut);
+    await ctx.fade(env, 0, 160);
+  } finally {
+    env.remove();
+    path.remove();
+    if (--world.acpInFlight === 0) label.setAttribute('opacity', 0);
+  }
 }
 
 function envelope(ctx, color, accent) {
