@@ -523,21 +523,22 @@ async function sendBack(ctx, world, p, kind) {
   if (ctx.alive) setInboxCount(ctx, chatPanel, Math.max(0, chatPanel.inboxCount - 1));
 }
 
-// Every message rides the wiring through the control plane: the sender calls
-// ACP (SendMessage / NotifyParents) and ACP appends to the recipient's inbox.
-// Agents never message each other directly.
+// Every message goes through the control plane in two hops: the sender calls
+// ACP (SendMessage / NotifyParents) and the envelope drops into ACP; then ACP,
+// as a separate step, appends it to the recipient's inbox. Agents never
+// message each other directly.
 async function viaAcp(ctx, world, p, dir, call, accent) {
   const { COLORS } = ctx;
   const { chat, acpY, gutterX, chatLinkY } = world;
-  const px = p.x + p.w / 2, boxBottom = p.y + p.h, laneY = acpY - 6;
-  const pts = [
-    [chat.x, chatLinkY], [gutterX, chatLinkY], [gutterX, laneY], [px, laneY], [px, boxBottom],
-  ];
-  if (dir === 'up') pts.reverse();
-  const path = ctx.el('path', {
-    d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'),
-    fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.1, 'stroke-dasharray': '3 3', opacity: 0.5,
-  });
+  const px = p.x + p.w / 2, boxBottom = p.y + p.h, barY = acpY + 9;
+  const chatSide = [[chat.x, chatLinkY], [gutterX, chatLinkY], [gutterX, barY]];
+  const projectSide = [[px, boxBottom], [px, barY]];
+  const [inbound, outbound] = dir === 'down'
+    ? [chatSide, [...projectSide].reverse()]
+    : [projectSide, [...chatSide].reverse()];
+  // ACP carries it along the bar from where it was dropped to the recipient's link.
+  const outboundLeg = [inbound[inbound.length - 1], ...outbound];
+
   // One shared label shows the latest ACP call, so concurrent messages
   // don't stack their labels on top of each other.
   if (!world.acpLabel) {
@@ -548,17 +549,32 @@ async function viaAcp(ctx, world, p, dir, call, accent) {
     world.acpInFlight = 0;
   }
   const label = world.acpLabel;
-  label.textContent = `ACP · ${call}`;
-  label.setAttribute('opacity', 1);
   world.acpInFlight++;
   const env = envelope(ctx, COLORS.notify, accent);
-  ctx.setPos(env, pts[0][0], pts[0][1]);
+  let path = null;
+  const leg = async (pts, ms) => {
+    path = ctx.el('path', {
+      d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'),
+      fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.1, 'stroke-dasharray': '3 3', opacity: 0.5,
+    });
+    ctx.setPos(env, pts[0][0], pts[0][1]);
+    await ctx.along(env, path, ms, ctx.ease.inOut);
+    path.remove();
+    path = null;
+  };
   try {
-    await ctx.along(env, path, 1500, ctx.ease.inOut);
+    // Hop 1: the sender hands the message to ACP; it drops into the bar.
+    await leg(inbound, 900);
+    label.textContent = `ACP · ${call}`;
+    label.setAttribute('opacity', 1);
+    const [dx, dy] = inbound[inbound.length - 1];
+    await ctx.pulse(dx, dy, COLORS.notify, 14, 320);
+    // Hop 2: ACP sends it on to the recipient's inbox — a separate, quicker step.
+    await leg(outboundLeg, 650);
     await ctx.fade(env, 0, 160);
   } finally {
     env.remove();
-    path.remove();
+    path?.remove();
     if (--world.acpInFlight === 0) label.setAttribute('opacity', 0);
   }
 }
