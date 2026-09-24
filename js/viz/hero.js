@@ -12,6 +12,8 @@ const IDLE_CAPTIONS = [
   'agents never call each other directly — they write to an inbox and let ACP handle the rest',
   'a wake-up is a signal, not a payload: the inbox is always the source of truth',
   'any node in the fleet can pick up an activation and boot an agent with its trajectory',
+  'every delivery is two steps: append to the inbox, then ACP sends an activation',
+  'a reconciler re-drives unresolved activations, so a lost wake-up is a delay, not a lost message',
   'trajectories only ever branch — forks inherit history without copying it',
 ];
 
@@ -146,6 +148,7 @@ export default {
       while (ctx.alive) {
         await ctx.wait(900 + Math.random() * 500);
         if (!ctx.alive) return;
+        chatWake(); // the chat agent only appends events while it's running
         tick(ctx, chatPanel, CHAT_SEQ[i % CHAT_SEQ.length]);
         i++;
       }
@@ -330,20 +333,29 @@ function makeNode(ctx, x, fleetY, nodeW, nodeH, i) {
 function setNodeActive(ctx, node, project) {
   const { COLORS } = ctx;
   node.active = !!project;
+  // A node can be released and re-claimed within one fade; the token lets a
+  // stale fade-out bail instead of wiping the new owner's label and glow.
+  const token = (node.token = (node.token || 0) + 1);
+  const fade = (el, to, ms) => {
+    const from = parseFloat(el.getAttribute('opacity') ?? '1');
+    return ctx.animate(ms, (t) => {
+      if (node.token === token) el.setAttribute('opacity', from + (to - from) * t);
+    }).catch(() => {});
+  };
   if (project) {
     node.rect.setAttribute('stroke', COLORS.activation);
     node.rect.setAttribute('fill', '#20190c');
     node.label.setAttribute('fill', COLORS.activation);
     node.sub.textContent = project.label;
     node.sub.setAttribute('fill', COLORS.activation);
-    ctx.fade(node.sub, 0.9, 200).catch(() => {});
-    ctx.fade(node.glow, 0.5, 250).catch(() => {});
+    fade(node.sub, 0.9, 200);
+    fade(node.glow, 0.5, 250);
   } else {
     node.rect.setAttribute('stroke', COLORS.line);
     node.rect.setAttribute('fill', COLORS.panel);
     node.label.setAttribute('fill', COLORS.muted);
-    ctx.fade(node.sub, 0, 200).then(() => { node.sub.textContent = ''; }).catch(() => {});
-    ctx.fade(node.glow, 0, 300).catch(() => {});
+    fade(node.sub, 0, 200).then(() => { if (node.token === token) node.sub.textContent = ''; });
+    fade(node.glow, 0, 300);
   }
 }
 
@@ -352,7 +364,12 @@ function setNodeActive(ctx, node, project) {
 async function pickFreeNode(ctx, nodes) {
   for (;;) {
     const free = nodes.filter((n) => !n.active);
-    if (free.length) return free[Math.floor(Math.random() * free.length)];
+    if (free.length) {
+      // Claim before any await so concurrent deliveries can't share a node.
+      const node = free[Math.floor(Math.random() * free.length)];
+      node.active = true;
+      return node;
+    }
     await ctx.wait(150);
   }
 }
@@ -450,7 +467,7 @@ async function deliverToProject(ctx, world, p) {
 
   // activation: wakes a fleet node (guaranteed free — never shared)
   let node = await pickFreeNode(ctx, nodes);
-  say(`activation wakes ${node.name} to boot ${p.label}`);
+  say(`ACP publishes an activation for ${p.label} — ${node.name} picks it up and boots it`);
   await activationBolt(ctx, world, p, node);
   if (!ctx.alive) return;
 
@@ -480,7 +497,7 @@ async function deliverToProject(ctx, world, p) {
       await ctx.wait(700 + Math.random() * 500);
       if (!ctx.alive) return;
       node = await pickFreeNode(ctx, nodes);
-      say(`activation wakes ${node.name} to resume ${p.label}`);
+      say(`ACP sends a resume activation — ${node.name} picks it up and continues ${p.label}`);
       await activationBolt(ctx, world, p, node);
       if (!ctx.alive) return;
       setNodeActive(ctx, node, p);
@@ -535,23 +552,36 @@ function envelope(ctx, color, accent) {
   return g;
 }
 
-// Routes the activation along the existing orthogonal wiring (project's
-// vertical drop -> along the ACP bar -> up into the node) so the fleet
-// stays legible even with several deliveries in flight at once.
+// ACP — not the recipient — issues the activation right after the inbox
+// append: it's published from the control plane, a free node picks it up,
+// and only then does that node boot the agent with its trajectory.
 async function activationBolt(ctx, world, p, node) {
-  const fromX = p.x + p.w / 2, fromY = p.y + p.h + 12;
+  const { COLORS } = ctx;
+  const px = p.x + p.w / 2;
   // Route along the lower edge of the bar, below the "AGENT CONTROL PLANE"
   // label, so the signal never draws over the text.
   const barY = world.acpY + 14;
   const toX = node.x, toY = node.y;
+
+  await ctx.pulse(px, barY, COLORS.activation, 16, 380);
   const bolt = ctx.el('path', {
-    d: `M${fromX},${fromY} L${fromX},${barY} L${toX},${barY} L${toX},${toY}`,
-    fill: 'none', stroke: ctx.COLORS.activation, 'stroke-width': 2, opacity: 0.9,
+    d: `M${px},${barY} L${toX},${barY} L${toX},${toY}`,
+    fill: 'none', stroke: COLORS.activation, 'stroke-width': 2, opacity: 0.9,
   });
-  await ctx.draw(bolt, 380);
-  await ctx.wait(60);
-  await ctx.fade(bolt, 0, 200);
+  await ctx.draw(bolt, 340);
+  await ctx.fade(bolt, 0, 180);
   bolt.remove();
+  if (!ctx.alive) return;
+  setNodeActive(ctx, node, p); // the node has picked up the activation
+
+  // The node boots the agent: its run attaches to the agent's trajectory.
+  const boot = ctx.el('path', {
+    d: `M${toX},${toY} L${toX},${world.acpY - 4} L${px},${world.acpY - 4} L${px},${p.y + p.h}`,
+    fill: 'none', stroke: COLORS.iter, 'stroke-width': 2, 'stroke-dasharray': '4 3', opacity: 1,
+  });
+  await ctx.draw(boot, 380);
+  await ctx.fade(boot, 0, 200);
+  boot.remove();
 }
 
 function shuffle(arr) {
