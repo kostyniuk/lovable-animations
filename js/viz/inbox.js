@@ -4,10 +4,16 @@
 // lane the agent itself writes — built from iteration blocks. At every
 // IterationEnd (and at run start) a gate opens and whatever is still
 // pending in the inbox gets copied onto the trajectory in order.
+//
+// Agent-to-agent traffic (Subagent, Scheduler) never lands in the inbox
+// directly — it is always two ACP steps: append to the inbox, then send an
+// activation. The ACP pill between the actors and the inbox is that relay;
+// activations (yellow) are a separate signal ACP sends onward to the agent,
+// distinct from the durable inbox append.
 
 import { COLORS, colorOf } from '../lib.js';
 
-const W = 900, H = 460;
+const W = 900, H = 380;
 
 const ACTOR_X = 20, ACTOR_W = 130;
 const ACTORS = {
@@ -16,11 +22,15 @@ const ACTORS = {
   scheduler: { y: 284, h: 66, label: 'Scheduler', kind: 'ExternalAgentNotification', color: 'notify', tag: 'wake-up' },
 };
 
-const INBOX_X = 220, INBOX_W = 240, INBOX_Y = 40, INBOX_H = 380;
+// ACP sits between the agent actors and the inbox: every inter-agent message
+// is relayed actor → ACP → inbox, in two hops, per the article.
+const ACP_X = 168, ACP_W = 46, ACP_H = 28, ACP_Y = 247;
+
+const INBOX_X = 220, INBOX_W = 240, INBOX_Y = 40, INBOX_H = 260;
 const INBOX_ROW_TOP = INBOX_Y + 40;
 const CARD_W = INBOX_W - 30, CARD_H = 32, CARD_GAP = 9;
 
-const TRAJ_X = 510, TRAJ_W = 370, TRAJ_Y = 40, TRAJ_H = 380;
+const TRAJ_X = 510, TRAJ_W = 370, TRAJ_Y = 40, TRAJ_H = 300;
 const TRAJ_ROW_TOP = TRAJ_Y + 66;
 const BLOCK_PAD = 14;
 const MAX_FLY_CHIPS = 4; // cap individual fly-in animations per admit batch
@@ -41,11 +51,29 @@ export default {
         x: ACTOR_X + ACTOR_W / 2, y: a.y + a.h / 2 + 4, class: 'mono', 'font-size': 11,
         'text-anchor': 'middle', fill: COLORS.text, text: a.label,
       });
-      // faint guide toward the inbox — actors only ever write here.
-      ctx.arrow(ACTOR_X + ACTOR_W, a.y + a.h / 2, INBOX_X, INBOX_Y + 16, {
-        color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
-      }).setAttribute('opacity', 0.35);
+      if (a.kind === 'ExternalAgentNotification') {
+        // agent-to-agent traffic only ever reaches ACP directly.
+        ctx.arrow(ACTOR_X + ACTOR_W, a.y + a.h / 2, ACP_X, ACP_Y + ACP_H / 2, {
+          color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
+        }).setAttribute('opacity', 0.35);
+      } else {
+        // the user's messages land in the inbox directly.
+        ctx.arrow(ACTOR_X + ACTOR_W, a.y + a.h / 2, INBOX_X, INBOX_Y + 16, {
+          color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
+        }).setAttribute('opacity', 0.35);
+      }
     }
+
+    // ACP: the orchestration layer. Every agent-to-agent message is relayed
+    // through it — append to the recipient's inbox, then send an activation.
+    ctx.box({ x: ACP_X, y: ACP_Y, w: ACP_W, h: ACP_H, title: '', color: colorOf('notify') });
+    ctx.el('text', {
+      x: ACP_X + ACP_W / 2, y: ACP_Y + ACP_H / 2 + 4, class: 'mono', 'font-size': 10.5,
+      'text-anchor': 'middle', fill: COLORS.text, text: 'ACP',
+    });
+    ctx.arrow(ACP_X + ACP_W, ACP_Y + ACP_H / 2, INBOX_X, INBOX_Y + INBOX_H / 2, {
+      color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
+    }).setAttribute('opacity', 0.35);
 
     const inboxBox = ctx.box({ x: INBOX_X, y: INBOX_Y, w: INBOX_W, h: INBOX_H, title: 'Inbox' });
     ctx.el('text', {
@@ -69,7 +97,9 @@ export default {
     }).setAttribute('opacity', 0.3);
 
     // ================= state =================
-    const state = { inbox: [], traj: [] };
+    // agentActive: true between AgentStart and AgentDone. Drives whether an
+    // activation actually starts a run or is just acknowledged and dropped.
+    const state = { inbox: [], traj: [], agentActive: false };
     // Serializes every inbox mutation (sends + admits) so simultaneous
     // button clicks can't race each other's reflow animations.
     let inboxLock = Promise.resolve();
@@ -77,6 +107,63 @@ export default {
       const p = inboxLock.then(fn, fn);
       inboxLock = p.then(() => {}, () => {});
       return p;
+    }
+
+    // Draws either a plain event pill, or — for ExternalAgentNotification —
+    // one that keeps the real event type readable as its own line/label:
+    // wide pills (trajectory) get one line "Type · payload" at the default
+    // (11px) size; narrow pills (inbox cards) stack type/payload on two
+    // lines, sized well above the 10 / 9.5px legibility floor.
+    function renderEventCard({ x, y, w, h, kind, tag, label, parent }) {
+      if (kind === 'ExternalAgentNotification' && !label && tag) {
+        if (w >= 260) {
+          return ctx.eventPill({ x, y, w, h, name: kind, label: `${kind} · ${tag}` }, parent);
+        }
+        const g = ctx.eventPill({ x, y, w, h, name: kind, label: '' }, parent);
+        const textEl = g.querySelector('text');
+        textEl.textContent = '';
+        ctx.el('tspan', {
+          x: 12, y: h / 2 - 4, 'font-size': 10, fill: COLORS.text, text: kind,
+        }, textEl);
+        ctx.el('tspan', {
+          x: 12, dy: 13, 'font-size': 9.5, fill: COLORS.muted, text: tag,
+        }, textEl);
+        return g;
+      }
+      return ctx.eventPill({ x, y, w, h, name: kind, label: label || kind }, parent);
+    }
+
+    // ACP sending an activation onward to the agent, after the durable
+    // inbox append. If the agent is idle this is what actually starts a new
+    // run; if it's already running, the activation is just acknowledged and
+    // dropped — the running agent will pick the message up at its next
+    // iteration boundary regardless.
+    async function activateAgent() {
+      const from = { x: ACP_X + ACP_W / 2, y: ACP_Y + ACP_H / 2 };
+      // Land below the "single writer" lock marker so the ack label never
+      // overlaps it.
+      const to = { x: TRAJ_X - 6, y: TRAJ_Y + 46 };
+      const arcY = Math.min(from.y, INBOX_Y) - 26;
+      const path = ctx.el('path', {
+        d: `M${from.x},${from.y} Q${(from.x + to.x) / 2},${arcY} ${to.x},${to.y}`,
+        fill: 'none', stroke: 'none',
+      }, root);
+      const dot = ctx.el('circle', { r: 4, fill: COLORS.activation }, root);
+      await ctx.along(dot, path, 420);
+      path.remove();
+      if (state.agentActive) {
+        const ack = ctx.el('text', {
+          x: to.x + 8, y: to.y + 4, class: 'mono', 'font-size': 9, fill: COLORS.muted,
+          text: 'already running · ack',
+        }, root);
+        await ctx.pulse(to.x, to.y, COLORS.activation, 14, 320);
+        await ctx.wait(260);
+        await ctx.fade(ack, 0, 300);
+        ack.remove();
+      } else {
+        await ctx.pulse(to.x, to.y, COLORS.activation, 20, 420);
+      }
+      dot.remove();
     }
 
     // ---------- inbox helpers ----------
@@ -109,17 +196,45 @@ export default {
     function sendMessage(actorKey, labelOverride) {
       return withInboxLock(async () => {
         const a = ACTORS[actorKey];
-        const label = labelOverride || (a.tag ? `Notif: ${a.tag}` : a.kind);
         const startX = ACTOR_X + ACTOR_W + 6;
         const startY = a.y + a.h / 2 - CARD_H / 2;
-        const card = ctx.eventPill({ x: startX, y: startY, name: a.kind, label, w: CARD_W, h: CARD_H });
+        let card;
+        if (a.kind === 'ExternalAgentNotification') {
+          // Agents don't write to each other's inboxes directly: the message
+          // is relayed through ACP in two hops. The gap between the actor
+          // column and the inbox is too narrow for a full-size card, so it
+          // travels as a small token: actor → ACP (a brief pause while ACP
+          // takes receipt), then ACP → inbox, where it becomes the real card.
+          const token = ctx.el('circle', { r: 5, fill: colorOf(a.color) }, root);
+          ctx.setPos(token, startX, a.y + a.h / 2);
+          const acpX = ACP_X + ACP_W / 2, acpY = ACP_Y + ACP_H / 2;
+          await ctx.move(token, acpX, acpY, 260);
+          await ctx.pulse(acpX, acpY, colorOf(a.color), 14, 320);
+          await ctx.wait(300);
+          await ctx.move(token, INBOX_X + 15 + CARD_W / 2, INBOX_ROW_TOP + CARD_H / 2, 200);
+          token.remove();
+          card = renderEventCard({
+            x: INBOX_X + 15, y: INBOX_ROW_TOP, w: CARD_W, h: CARD_H, kind: a.kind, tag: a.tag, label: labelOverride,
+          });
+        } else {
+          card = renderEventCard({
+            x: startX, y: startY, w: CARD_W, h: CARD_H, kind: a.kind, tag: a.tag, label: labelOverride,
+          });
+        }
+        // On the 2-line notify cards the payload sub-label sits below
+        // center — level the status tag with it so the two never collide.
+        const statusY = a.kind === 'ExternalAgentNotification' ? CARD_H / 2 + 9 : CARD_H / 2 + 4;
         const statusEl = ctx.el('text', {
-          x: CARD_W - 8, y: CARD_H / 2 + 4, class: 'mono', 'font-size': 9.5,
+          x: CARD_W - 8, y: statusY, class: 'mono', 'font-size': 9.5,
           'text-anchor': 'end', fill: colorOf(a.color), text: '● pending',
         }, card);
-        const entry = { node: card, statusEl, handled: false, kind: a.kind };
+        const entry = { node: card, statusEl, handled: false, kind: a.kind, tag: a.tag };
         state.inbox.push(entry);
         await reflowInbox();
+        // The append is the durable step; ACP also sends an activation. If
+        // the agent is already running it's just acknowledged and dropped —
+        // the idle-wake case is driven explicitly by the sandbox loop below.
+        if (state.agentActive) ctx.spawn(() => activateAgent());
         return entry;
       });
     }
@@ -135,14 +250,22 @@ export default {
           const card = pending[i];
           const from = ctx.getPos(card.node);
           const x1 = from.x + CARD_W, y1 = from.y + CARD_H / 2;
-          const to = block.nextChipPos();
+          // Notify events get a full-width single-line chip (room to read
+          // "ExternalAgentNotification · <payload>" at normal size); other
+          // kinds stay compact.
+          const wide = card.kind === 'ExternalAgentNotification';
+          const cw = wide ? TRAJ_W - BLOCK_PAD * 2 - 20 : 160;
+          const ch = wide ? 24 : 20;
+          const to = block.nextChipPos(); // reserved top-left slot, claimed below
+          // Drop to the slot's height while still left of (outside) the
+          // trajectory box, then move straight in from the left edge — so
+          // the flight only ever crosses the empty target row, never the
+          // rows already sitting above it.
           const path = ctx.el('path', {
-            d: `M${x1},${y1} Q${(x1 + to.x) / 2 + 40},${(y1 + to.y) / 2 - 30} ${to.x},${to.y}`,
+            d: `M${x1},${y1} C${x1 + 40},${y1} ${TRAJ_X - 16},${to.y + ch / 2} ${to.x},${to.y}`,
             fill: 'none', stroke: 'none',
           }, root);
-          const clone = ctx.eventPill({
-            x: x1, y: y1, name: card.kind, label: card.node.querySelector('text').textContent, w: 160, h: 20,
-          });
+          const clone = renderEventCard({ x: x1, y: y1, w: cw, h: ch, kind: card.kind, tag: card.tag });
           clone.setAttribute('opacity', 0.9);
           await ctx.along(clone, path, 560);
           path.remove();
@@ -195,18 +318,21 @@ export default {
       const block = {
         g, bg, contentY: startContentY,
         nextChipPos() {
-          // absolute page position where the next chip should land
+          // absolute page position of the next chip's top-left resting
+          // spot — reserved the moment it's asked for, since the caller
+          // claims it (via absorbChip) before starting the next one.
           const p = ctx.getPos(g);
-          return { x: p.x + (TRAJ_W - BLOCK_PAD * 2) / 2, y: p.y + this.contentY + 10 };
+          return { x: p.x + 8, y: p.y + this.contentY };
         },
         absorbChip(clone) {
-          // clone currently lives in root at absolute coords; reparent into
-          // this block, keeping the same on-screen position.
+          // clone currently lives in root at absolute coords, already at
+          // its final resting (top-left) position; reparent into this
+          // block, keeping that same on-screen position.
           const abs = ctx.getPos(clone);
           const origin = ctx.getPos(g);
           g.appendChild(clone);
-          ctx.setPos(clone, abs.x - origin.x - 80, abs.y - origin.y - 10);
-          this.contentY += 26;
+          ctx.setPos(clone, abs.x - origin.x, abs.y - origin.y);
+          this.contentY += (clone._h || 20) + 6;
           if (this.bg) this.bg.setAttribute('height', this.contentY + 8);
         },
         addWork(label, type) {
@@ -224,6 +350,7 @@ export default {
     // A simple wide pill row (AgentStart / AgentDone) that can still absorb
     // messages admitted right at run start.
     async function appendAgentPill(name) {
+      state.agentActive = name === 'AgentStart';
       const y = recomputeTop();
       const g = ctx.el('g', {});
       ctx.setPos(g, TRAJ_X + BLOCK_PAD, y);
@@ -319,20 +446,22 @@ export default {
 
     await appendAgentPill('AgentDone');
     await ctx.beat(
-      'Now it\'s an interactive sandbox: use the buttons any time. If the agent is idle when a ' +
-      'message lands, a fresh <span class="t t-agent">AgentStart</span> picks it up right away.'
+      'Now it\'s an interactive sandbox: use the buttons any time. The agent doesn\'t watch its own ' +
+      'inbox — ACP does. If it\'s idle, ACP sends an activation and a fresh ' +
+      '<span class="t t-agent">AgentStart</span> picks the message up.'
     );
 
     // ================= autonomous sandbox loop =================
     let idleStreak = 0;
-    let running = true;
+    let running = false;
     while (ctx.alive) {
       if (!running) {
-        ctx.caption('Agent idle (AgentDone). Waiting for a new message to arrive in the inbox…');
+        ctx.caption('Agent idle (AgentDone) — nothing runs until ACP sends an activation.');
         while (ctx.alive && !state.inbox.some((c) => !c.handled)) await ctx.wait(200);
         if (!ctx.alive) break;
+        await activateAgent();
         run = await appendAgentPill('AgentStart');
-        ctx.caption('A message arrived — a new run starts and admits it immediately.');
+        ctx.caption('ACP sends an activation — a new run starts and admits the message at run start.');
         await admitPending(run);
         running = true;
         idleStreak = 0;
