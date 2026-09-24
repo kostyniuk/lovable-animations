@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How Lovable's agents work together — animated</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22><circle cx=%225%22 cy=%225%22 r=%225%22 fill=%22%23ff4fa3%22/></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="kicker">An interactive companion to “Inside Chats”</div>
+    <h1>How Lovable’s agents <span class="grad">work together</span></h1>
+    <p class="lede">
+      Three things that are easy to conflate: <strong>what happened</strong>, <strong>what an agent needs to know</strong>,
+      and <strong>when it should run</strong>. Lovable keeps them apart — trajectories, context projection, and
+      inboxes + activations — and every animation below is one of those ideas slowed down enough to watch.
+    </p>
+    <p class="source">Based on <a href="https://lovable.dev/blog/how-lovable-agents-work-together">lovable.dev/blog/how-lovable-agents-work-together</a>. Every figure runs itself when scrolled into view; use <em>Step</em> to go one beat at a time.</p>
+  </header>
+
+  <figure id="viz-hero"></figure>
+
+  <div class="legend">
+    <span class="t t-user">UserMessage</span>
+    <span class="t t-agent">AgentStart / AgentDone</span>
+    <span class="t t-iter">IterationStart / End</span>
+    <span class="t t-thinking">thinking</span>
+    <span class="t t-content">content</span>
+    <span class="t t-tool">tool lifecycle</span>
+    <span class="t t-fork">fork / head</span>
+    <span class="t t-compact">compaction</span>
+    <span class="t t-notify">ExternalAgentNotification</span>
+    <span class="t t-activation">activation</span>
+  </div>
+
+  <!-- 1 -->
+  <h2><span class="num">01</span>Trajectories: an event log modeled after Git</h2>
+  <p>
+    Every agent conversation is a log of immutable events: <span class="t t-user">UserMessage</span>,
+    <span class="t t-agent">AgentStart</span>/<span class="t t-agent">AgentDone</span> around a response,
+    <span class="t t-iter">IterationStart</span>/<span class="t t-iter">IterationEnd</span> around each LLM call,
+    and the full tool lifecycle in between. Nothing is deleted — even a revert is an appended <span class="t t-revert">Revert</span>.
+  </p>
+  <p>
+    Each event has exactly <strong>one parent pointer</strong>. Named <em>heads</em> point at the tip of each line of history, like Git branches.
+    That makes forking free: from any <span class="t t-iter">IterationEnd</span> or <span class="t t-agent">AgentDone</span>,
+    a new head appears whose first event, <span class="t t-fork">ThreadForkConfig</span>, points back at the fork point.
+    No events are copied. And unlike Git, trajectories never merge — they only branch.
+  </p>
+  <figure id="viz-trajectory">
+    <figcaption>One builder turn, one parent pointer per event. Click <em>Fork here</em> to branch from the latest boundary — watch how nothing gets copied.</figcaption>
+  </figure>
+
+  <!-- 2 -->
+  <h2><span class="num">02</span>Context is a projection of the trajectory</h2>
+  <p>
+    The trajectory is the source of truth, but it isn’t what gets sent to the model. At every
+    <span class="t t-iter">IterationStart</span>, the prompt builder walks the head <em>backwards</em> and renders a prompt.
+    How much the model sees, and in what shape, is decided per call.
+  </p>
+  <p>
+    Compaction shows why this matters. The agent writes <span class="t t-compact">PromptCompactionStart</span> and keeps working
+    while a summarizer runs on a <em>side trajectory</em>. At a later boundary the agent admits the result as
+    <span class="t t-compact">PromptCompactionEnd</span>. From then on, the backward walk stops at that pair and uses the summary
+    in place of everything it covers.
+  </p>
+  <figure id="viz-context">
+    <figcaption>Compaction is two events on the agent’s trajectory. The summary is produced elsewhere and admitted later; the prompt builder swaps it in during its backward walk.</figcaption>
+  </figure>
+
+  <!-- 3 -->
+  <h2><span class="num">03</span>Streaming: partial events and field deltas</h2>
+  <p>
+    Events are whole and immutable, but LLM output arrives in chunks. So there’s a side channel for events that don’t exist yet:
+    a <code>PartialOpened</code>, then a run of <code>PartialDelta</code>s (“append this text”), pushed live to the browser.
+    When the block finishes, the real event is appended to the trajectory with the <strong>same id</strong>, which closes the partial.
+  </p>
+  <p>
+    Partials have no parent and are never persisted. A browser that connects halfway gets the persisted events plus each open partial
+    materialized once — then follows the live stream. Refreshes and extra tabs all converge on the same trajectory.
+  </p>
+  <figure id="viz-streaming">
+    <figcaption>Streaming happens beside the trajectory, not in it. Only the final event is persisted. Try <em>Open a late tab</em> mid-stream.</figcaption>
+  </figure>
+
+  <!-- 4 -->
+  <h2><span class="num">04</span>Two logs per agent: the inbox and the trajectory</h2>
+  <p>
+    Each agent has two logs. The <strong>inbox</strong> is where everything sent to it lands — user messages and
+    <span class="t t-notify">ExternalAgentNotification</span>s from other agents. The <strong>trajectory</strong> is what the agent actually did.
+  </p>
+  <p>
+    Other actors only ever write to the inbox. The agent copies unhandled messages onto its trajectory at run start and at
+    <strong>every iteration boundary</strong> — so a message that arrives mid-response becomes an interjection instead of waiting for the turn to end.
+  </p>
+  <figure id="viz-inbox">
+    <figcaption>Other actors append to the inbox whenever they like. The agent admits messages on its own schedule, at iteration boundaries. Send a few messages while it’s working.</figcaption>
+  </figure>
+
+  <!-- 5 -->
+  <h2><span class="num">05</span>The Agent Control Plane</h2>
+  <p>
+    Spawn, result, progress report, hand-off, scheduled wake-up — ACP collapses every interaction into one primitive:
+    <strong>append a message to the recipient’s inbox, then send an activation</strong>. Agents never call each other or know which machine the other is on.
+  </p>
+  <p>
+    The inbox write is the durable part. The <span class="t t-activation">activation</span> is just a wake-up signal: if the recipient is asleep,
+    any node can pick it up and start a run. If it’s already running, the next iteration boundary picks the message up and the
+    duplicate activation is simply acknowledged and dropped — each trajectory has a single exclusive writer.
+  </p>
+  <figure id="viz-acp">
+    <figcaption>A subagent reporting back through ACP. The durable step is the append to the parent’s inbox; the activation is only the wake-up.</figcaption>
+  </figure>
+
+  <!-- 6 -->
+  <h2><span class="num">06</span>Suspend and resume: agents that survive deploys</h2>
+  <p>
+    Right after an <span class="t t-iter">IterationEnd</span>, the trajectory holds everything the next iteration needs. So the loop can just stop:
+    the run exits <em>suspended</em>, no <span class="t t-agent">AgentDone</span> is written, and the still-open agent block <em>is</em> the signal that
+    there’s more to do. ACP sends a resume activation and any node continues the same trajectory.
+  </p>
+  <p>
+    During a deploy, nodes drain: most turns finish, the rest suspend at their next boundary and resume on fresh nodes.
+    The sandbox lives separately; the work lives in the trajectory and in git. The process is disposable.
+  </p>
+  <figure id="viz-suspend">
+    <figcaption>At an iteration boundary the process is disposable. Hit <em>Deploy</em> and watch a run hop nodes without losing a single event.</figcaption>
+  </figure>
+
+  <!-- 7 -->
+  <h2><span class="num">07</span>Putting it together: Chats</h2>
+  <p>
+    The chat agent runs at the workspace level, on its own trajectory, with access to all your projects. When it decides a project
+    should do work, it calls <code>send_message_to_project</code> — which is just <code>SendMessage</code>: a notification appended to that project’s
+    inbox plus an activation that wakes its builder.
+  </p>
+  <p>
+    Progress flows back over the same primitive. Mid-turn updates and the final result (credits used, files changed, build status) land in the chat
+    agent’s inbox as <span class="t t-notify">ExternalAgentNotification</span>s. Several calls in one turn run projects in parallel.
+  </p>
+  <figure id="viz-chats">
+    <figcaption>Instructions down, progress and results up — all as notifications landing in inboxes.</figcaption>
+  </figure>
+
+  <footer>
+    <p class="source">
+      Animations are an unofficial, interactive retelling of
+      <a href="https://lovable.dev/blog/how-lovable-agents-work-together">Inside Chats: How Lovable’s Agents Work Together</a>.
+      Visual approach inspired by Ben Dicken’s interactive essays on the PlanetScale blog.
+    </p>
+  </footer>
+</main>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,564 @@
+// #viz-hero — ambient overview of the whole system: a workspace-level chat
+// agent fanning work out to project builders, which boot on fleet nodes and
+// report progress back, all through inboxes + activations over the ACP.
+// Every agent box carries live state (status badge, activity line, inbox
+// count, a git-style trajectory lane) so the figure reads as a real system
+// at a glance rather than a wireframe.
+
+const GLOW_ID = 'hero-glow';
+
+const IDLE_CAPTIONS = [
+  'the chat agent runs at the workspace level, on its own trajectory',
+  'agents never call each other directly — they write to an inbox and let ACP handle the rest',
+  'a wake-up is a signal, not a payload: the inbox is always the source of truth',
+  'any node in the fleet can pick up an activation and boot an agent with its trajectory',
+  'trajectories only ever branch — forks inherit history without copying it',
+];
+
+// event type -> what shows on the activity line while that tick is "current"
+const ACTIVITY = {
+  user: 'UserMessage received',
+  iter: 'IterationStart',
+  tool: 'tool_call edit_file',
+  thinking: 'thinking…',
+  content: 'writing response…',
+  compact: 'compacting context…',
+  notify: 'ExternalAgentNotification',
+  agent: 'AgentDone',
+};
+
+const CHAT_SEQ = ['user', 'iter', 'thinking', 'tool', 'content', 'notify'];
+const BUILD_SEQ = ['iter', 'thinking', 'tool', 'content', 'iter', 'tool', 'compact'];
+
+const STATUS = {
+  asleep: { color: 'dim', label: 'asleep' },
+  running: { color: 'tool', label: 'running' },
+  suspended: { color: 'activation', label: 'suspended' },
+};
+
+export default {
+  width: 900,
+  height: 480,
+  loop: false,
+  async build(ctx) {
+    const { COLORS } = ctx;
+    ensureGlow(ctx);
+
+    // ---------- layout ----------
+    const chat = { x: 340, y: 20, w: 220, h: 110 };
+    const projectDefs = [
+      { key: 'marketing', label: 'marketing-site', x: 60, y: 190, w: 210, h: 110 },
+      { key: 'dashboard', label: 'dashboard', x: 345, y: 190, w: 210, h: 110 },
+      { key: 'mobile', label: 'mobile-app', x: 630, y: 190, w: 210, h: 110 },
+    ];
+    const acpY = 350;
+    const fleetY = 400;
+    const fleetXs = [110, 265, 420, 575, 730];
+    const nodeW = 118, nodeH = 46;
+
+    // ---------- chat panel ----------
+    ctx.el('text', {
+      x: chat.x + chat.w / 2, y: chat.y - 10, 'text-anchor': 'middle',
+      class: 'mono', 'font-size': 11, fill: COLORS.muted, 'letter-spacing': '0.08em',
+      text: 'CHAT AGENT · workspace',
+    });
+    const chatPanel = makePanel(ctx, { x: chat.x, y: chat.y, w: chat.w, h: chat.h, accent: COLORS.agent });
+    chatPanel.isChat = true;
+    // Chat wakes briefly (status -> running) whenever it handles an event —
+    // sending a task or admitting a notification — then falls back asleep
+    // shortly after, unless a newer wake supersedes the pending sleep.
+    let wakeToken = 0;
+    const chatWake = () => {
+      setStatus(ctx, chatPanel, 'running');
+      const token = ++wakeToken;
+      ctx.spawn(async () => {
+        await ctx.wait(1000);
+        if (ctx.alive && token === wakeToken) {
+          setStatus(ctx, chatPanel, 'asleep');
+          chatPanel.activity.textContent = 'idle · waiting for a message';
+        }
+      });
+    };
+    setStatus(ctx, chatPanel, 'asleep');
+    chatPanel.activity.textContent = 'idle · waiting for a message';
+    prefill(ctx, chatPanel.lane, () => ctx.colorOf(CHAT_SEQ[Math.floor(Math.random() * CHAT_SEQ.length)]));
+
+    // ---------- project panels ----------
+    const projects = projectDefs.map((p) => {
+      ctx.el('text', {
+        x: p.x + p.w / 2, y: p.y - 10, 'text-anchor': 'middle',
+        class: 'mono', 'font-size': 10.5, fill: COLORS.muted, 'letter-spacing': '0.06em',
+        text: p.label.toUpperCase(),
+      });
+      const panel = makePanel(ctx, { x: p.x, y: p.y, w: p.w, h: p.h, accent: COLORS.iter });
+      setStatus(ctx, panel, 'asleep');
+      panel.activity.textContent = 'idle · waiting for a task';
+      prefill(ctx, panel.lane, () => ctx.colorOf(BUILD_SEQ[Math.floor(Math.random() * BUILD_SEQ.length)]));
+      return { ...p, panel, busy: false };
+    });
+
+    // ---------- ACP bar ----------
+    ctx.el('rect', {
+      x: 60, y: acpY, width: 780, height: 18, rx: 9,
+      fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1,
+    });
+    ctx.el('text', {
+      x: 450, y: acpY + 12, 'text-anchor': 'middle', class: 'mono',
+      'font-size': 10, fill: COLORS.muted, 'letter-spacing': '0.08em',
+      text: 'AGENT CONTROL PLANE',
+    });
+
+    // ---------- fleet nodes ----------
+    const nodes = fleetXs.map((x, i) => makeNode(ctx, x, fleetY, nodeW, nodeH, i));
+
+    // ---------- connectors ----------
+    projects.forEach((p) => {
+      ctx.arrow(p.x + p.w / 2, p.y + p.h, p.x + p.w / 2, acpY, { color: COLORS.dim, width: 1, head: false });
+    });
+    fleetXs.forEach((x) => {
+      ctx.arrow(x, acpY + 18, x, fleetY, { color: COLORS.dim, width: 1, head: false });
+    });
+    ctx.arrow(chat.x + chat.w / 2, chat.y + chat.h, chat.x + chat.w / 2, projectDefs[1].y - 14, {
+      color: COLORS.dim, width: 1, head: false, dash: '2 4',
+    });
+
+    // ---------- captions ----------
+    let lastSaid = 0;
+    const say = (text) => { ctx.caption(text); lastSaid = performance.now(); };
+    say('watching the whole system idle, waiting for work to arrive');
+
+    let idleIdx = 0;
+    ctx.spawn(async () => {
+      while (ctx.alive) {
+        await ctx.wait(1600);
+        if (!ctx.alive) return;
+        if (performance.now() - lastSaid > 2600) {
+          ctx.caption(IDLE_CAPTIONS[idleIdx % IDLE_CAPTIONS.length]);
+          idleIdx++;
+          lastSaid = performance.now() - 2600;
+        }
+      }
+    });
+
+    // chat trajectory ticks forever (ambient thinking/tool chatter)
+    ctx.spawn(async () => {
+      let i = 0;
+      while (ctx.alive) {
+        await ctx.wait(900 + Math.random() * 500);
+        if (!ctx.alive) return;
+        tick(ctx, chatPanel, CHAT_SEQ[i % CHAT_SEQ.length]);
+        i++;
+      }
+    });
+
+    // frequent forks, branching off a real tick on a random builder's lane
+    ctx.spawn(async () => {
+      while (ctx.alive) {
+        await ctx.wait(3600 + Math.random() * 3200);
+        if (!ctx.alive) return;
+        const p = projects[Math.floor(Math.random() * projects.length)];
+        say(`a background fork branches off ${p.label}'s trajectory to summarize and keep going`);
+        await showFork(ctx, p);
+      }
+    });
+
+    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, say };
+
+    ctx.button('Send a task', () => ctx.spawn(() => runFanOut(ctx, world)));
+
+    // ambient auto-loop: keep firing overlapping fan-outs so several things
+    // are always in flight at once.
+    while (ctx.alive) {
+      ctx.spawn(() => runFanOut(ctx, world));
+      await ctx.wait(1300 + Math.random() * 1100);
+    }
+  },
+};
+
+// ---------- glow ----------
+
+function ensureGlow(ctx) {
+  if (ctx.svg.querySelector('#' + GLOW_ID)) return;
+  let defs = ctx.svg.querySelector('defs');
+  if (!defs) defs = ctx.el('defs', {}, ctx.svg);
+  const filter = ctx.el('filter', { id: GLOW_ID, x: '-60%', y: '-60%', width: '220%', height: '220%' }, defs);
+  ctx.el('feGaussianBlur', { stdDeviation: 5, in: 'SourceGraphic' }, filter);
+}
+
+// ---------- panels (chat + project boxes with live content) ----------
+
+function makePanel(ctx, { x, y, w, h, accent }) {
+  const { COLORS } = ctx;
+  const glow = ctx.el('rect', {
+    x: x - 10, y: y - 10, width: w + 20, height: h + 20, rx: 16,
+    fill: accent, opacity: 0, filter: `url(#${GLOW_ID})`,
+  });
+  const box = ctx.box({ x, y, w, h, color: accent });
+
+  const statusDot = ctx.el('circle', { cx: x + 14, cy: y + 17, r: 3.5, fill: COLORS.dim });
+  const statusText = ctx.el('text', {
+    x: x + 22, y: y + 20, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'asleep',
+  });
+
+  const trayX = x + w - 30, trayY = y + 9;
+  const tray = trayIcon(ctx, trayX, trayY, COLORS.notify);
+  const countBg = ctx.el('circle', { cx: trayX + 23, cy: trayY - 3, r: 7, fill: COLORS.notify, opacity: 0 });
+  const countText = ctx.el('text', {
+    x: trayX + 23, y: trayY, 'text-anchor': 'middle', class: 'mono', 'font-size': 8.5,
+    fill: COLORS.bg, opacity: 0, text: '',
+  });
+
+  const activity = ctx.el('text', {
+    x: x + 14, y: y + 40, class: 'mono', 'font-size': 10, fill: COLORS.muted, text: '· · ·',
+  });
+
+  const lane = makeLane(ctx, x + 10, y + h - 30, w - 20);
+
+  return {
+    x, y, w, h, glow, box, statusDot, statusText, tray, countBg, countText, activity, lane,
+    inboxCount: 0,
+    trayPoint: { x: trayX + 11, y: trayY + 8 },
+  };
+}
+
+function setStatus(ctx, panel, status) {
+  const s = STATUS[status];
+  const color = ctx.COLORS[s.color];
+  panel.statusDot.setAttribute('fill', color);
+  panel.statusText.textContent = s.label;
+}
+
+function tick(ctx, panel, type) {
+  addChip(ctx, panel.lane, ctx.colorOf(type));
+  // The chat agent only ever sees a builder's AgentDone as an incoming result.
+  panel.activity.textContent = panel.isChat && type === 'agent'
+    ? 'admitted a builder result'
+    : ACTIVITY[type] || type;
+}
+
+function setInboxCount(ctx, panel, n) {
+  panel.inboxCount = n;
+  panel.countText.textContent = String(n);
+  ctx.fade(panel.countBg, n > 0 ? 0.95 : 0, 150).catch(() => {});
+  ctx.fade(panel.countText, n > 0 ? 1 : 0, 150).catch(() => {});
+}
+
+function setPanelGlow(ctx, panel, on) {
+  ctx.fade(panel.glow, on ? 0.4 : 0, 300).catch(() => {});
+}
+
+function trayIcon(ctx, x, y, color) {
+  const g = ctx.el('g', {});
+  ctx.setPos(g, x, y);
+  ctx.el('rect', { x: 0, y: 0, width: 22, height: 16, rx: 3, fill: 'none', stroke: color, 'stroke-width': 1.25, opacity: 0.7 }, g);
+  ctx.el('path', { d: 'M0,0 L11,9 L22,0', fill: 'none', stroke: color, 'stroke-width': 1.25, opacity: 0.7 }, g);
+  return g;
+}
+
+// ---------- trajectory lane: fixed-capacity, git-style chip row ----------
+// Fills up to capacity without shifting; once full, adding a chip drops the
+// oldest (left) one and smoothly slides the rest over, so the lane always
+// reads as rich, dense history.
+function makeLane(ctx, x, y, w) {
+  const chipW = 9, chipH = 16, gap = 3, pad = 8;
+  const pitch = chipW + gap;
+  const h = chipH + 8;
+  const capacity = Math.max(4, Math.floor((w - 2 * pad + gap) / pitch));
+  const g = ctx.el('g', {});
+  ctx.setPos(g, x, y);
+  ctx.el('rect', { x: 0, y: 0, width: w, height: h, rx: 5, fill: ctx.COLORS.bg, stroke: ctx.COLORS.dim, 'stroke-width': 1 }, g);
+  const clipId = 'clip-' + Math.random().toString(36).slice(2);
+  const defs = ctx.el('clipPath', { id: clipId }, g);
+  ctx.el('rect', { x: 2, y: 2, width: w - 4, height: h - 4, rx: 4 }, defs);
+  const inner = ctx.el('g', { 'clip-path': `url(#${clipId})`, transform: `translate(0, ${(h - chipH) / 2})` }, g);
+  return { g, inner, w, h, chipW, chipH, pad, pitch, capacity, ticks: [] };
+}
+
+function addChip(ctx, lane, color, instant = false) {
+  const chip = ctx.el('rect', {
+    y: 0, width: lane.chipW, height: lane.chipH, rx: 2, fill: color, opacity: instant ? 0.95 : 0,
+  }, lane.inner);
+  if (lane.ticks.length >= lane.capacity) {
+    const old = lane.ticks.shift();
+    ctx.fade(old.el, 0, 150).then(() => old.el.remove()).catch(() => {});
+    lane.ticks.forEach((t, i) => {
+      const fromX = parseFloat(t.el.getAttribute('x'));
+      const toX = lane.pad + i * lane.pitch;
+      if (fromX !== toX) ctx.animate(220, (k) => t.el.setAttribute('x', fromX + (toX - fromX) * k)).catch(() => {});
+    });
+  }
+  chip.setAttribute('x', lane.pad + lane.ticks.length * lane.pitch);
+  lane.ticks.push({ el: chip, color });
+  if (!instant) ctx.fade(chip, 0.95, 180).catch(() => {});
+  return chip;
+}
+
+// Fill a lane to capacity immediately so it never starts (or looks) empty.
+function prefill(ctx, lane, colorPick) {
+  for (let i = 0; i < lane.capacity; i++) addChip(ctx, lane, colorPick(), true);
+}
+
+// Absolute point at the rightmost (most recent) chip of a lane.
+function tipPoint(ctx, lane) {
+  const pos = ctx.getPos(lane.g);
+  const last = lane.ticks[lane.ticks.length - 1];
+  const lx = last ? parseFloat(last.el.getAttribute('x')) + lane.chipW / 2 : lane.pad;
+  return { x: pos.x + lx, y: pos.y + lane.h / 2, chip: last ? last.el : null };
+}
+
+// ---------- fleet nodes ----------
+
+function makeNode(ctx, x, fleetY, nodeW, nodeH, i) {
+  const { COLORS } = ctx;
+  const glow = ctx.el('rect', {
+    x: x - nodeW / 2 - 8, y: fleetY - 8, width: nodeW + 16, height: nodeH + 16, rx: 14,
+    fill: COLORS.activation, opacity: 0, filter: `url(#${GLOW_ID})`,
+  });
+  const g = ctx.box({ x: x - nodeW / 2, y: fleetY, w: nodeW, h: nodeH, color: COLORS.line });
+  const name = `node-${i + 1}`;
+  const label = ctx.el('text', {
+    x: nodeW / 2, y: nodeH / 2 - 3, 'text-anchor': 'middle', class: 'mono',
+    'font-size': 10.5, fill: COLORS.muted, text: name,
+  }, g);
+  const sub = ctx.el('text', {
+    x: nodeW / 2, y: nodeH / 2 + 13, 'text-anchor': 'middle', class: 'mono',
+    'font-size': 9, fill: COLORS.muted, opacity: 0, text: '',
+  }, g);
+  return { x, y: fleetY, box: g, rect: g._rect, glow, label, sub, name, active: false };
+}
+
+function setNodeActive(ctx, node, project) {
+  const { COLORS } = ctx;
+  node.active = !!project;
+  if (project) {
+    node.rect.setAttribute('stroke', COLORS.activation);
+    node.rect.setAttribute('fill', '#20190c');
+    node.label.setAttribute('fill', COLORS.activation);
+    node.sub.textContent = project.label;
+    node.sub.setAttribute('fill', COLORS.activation);
+    ctx.fade(node.sub, 0.9, 200).catch(() => {});
+    ctx.fade(node.glow, 0.5, 250).catch(() => {});
+  } else {
+    node.rect.setAttribute('stroke', COLORS.line);
+    node.rect.setAttribute('fill', COLORS.panel);
+    node.label.setAttribute('fill', COLORS.muted);
+    ctx.fade(node.sub, 0, 200).then(() => { node.sub.textContent = ''; }).catch(() => {});
+    ctx.fade(node.glow, 0, 300).catch(() => {});
+  }
+}
+
+// Waits for an actually-free node rather than falling back to a busy one, so
+// two projects can never share (and fight over) the same fleet node.
+async function pickFreeNode(ctx, nodes) {
+  for (;;) {
+    const free = nodes.filter((n) => !n.active);
+    if (free.length) return free[Math.floor(Math.random() * free.length)];
+    await ctx.wait(150);
+  }
+}
+
+// ---------- fork: a real branch off the current tip of a lane ----------
+
+async function showFork(ctx, p) {
+  if (!ctx.alive) return;
+  const { COLORS } = ctx;
+  const origin = tipPoint(ctx, p.panel.lane);
+  if (!origin.chip) return;
+  origin.chip.setAttribute('stroke', COLORS.fork);
+  origin.chip.setAttribute('stroke-width', '1.5');
+
+  const endX = origin.x + 46, endY = origin.y + 40;
+  const path = ctx.el('path', {
+    d: `M${origin.x},${origin.y} Q${origin.x + 8},${origin.y + 28} ${endX},${endY}`,
+    fill: 'none', stroke: COLORS.fork, 'stroke-width': 1.5, opacity: 0.9,
+  });
+  await ctx.draw(path, 320);
+  if (!ctx.alive) { path.remove(); return; }
+
+  const forkLane = makeLane(ctx, endX, endY - 8, 74);
+  const forkColors = [COLORS.fork, COLORS.thinking, COLORS.fork, COLORS.thinking];
+  for (let i = 0; i < forkColors.length; i++) {
+    if (!ctx.alive) break;
+    addChip(ctx, forkLane, forkColors[i]);
+    await ctx.wait(150);
+  }
+  await ctx.wait(1100);
+
+  await Promise.all([
+    ctx.fade(forkLane.g, 0, 280).catch(() => {}),
+    ctx.fade(path, 0, 280).catch(() => {}),
+  ]);
+  forkLane.g.remove();
+  path.remove();
+  origin.chip.removeAttribute('stroke');
+  origin.chip.removeAttribute('stroke-width');
+}
+
+// ---------- fan-out: chat -> projects -> fleet -> back to chat ----------
+
+// Never double-books a project: only ever returns projects that are
+// currently idle, even if that means fewer than `count`.
+function pickProjects(projects, count) {
+  const free = shuffle(projects.filter((p) => !p.busy));
+  return free.slice(0, count);
+}
+
+async function runFanOut(ctx, world) {
+  const { chatPanel, chatWake, say } = world;
+
+  const count = 1 + Math.floor(Math.random() * 3);
+  const chosen = pickProjects(world.projects, count);
+  if (!chosen.length) return; // every project is already busy — try again next cycle
+  chosen.forEach((p) => { p.busy = true; }); // claim immediately, before any await
+
+  chatWake();
+  tick(ctx, chatPanel, 'user');
+  const chatCx = world.chat.x + world.chat.w / 2, chatCy = world.chat.y + world.chat.h / 2;
+  await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
+
+  say(`chat agent sends a task to ${chosen.map((p) => p.label).join(' and ')}`);
+
+  await Promise.all(chosen.map((p) => deliverToProject(ctx, world, p)));
+}
+
+async function deliverToProject(ctx, world, p) {
+  const { colorOf } = ctx;
+  const { chat, nodes, say } = world;
+
+  const fromX = chat.x + chat.w / 2, fromY = chat.y + chat.h;
+  const trayPoint = p.panel.trayPoint;
+  // Land just beside the tray icon, not on top of it, then merge into it —
+  // avoids covering the icon and the inbox-count badge.
+  const dest = { x: trayPoint.x - 22, y: trayPoint.y };
+  const curve = (p.x + p.w / 2 < chat.x) ? 60 : (p.x > chat.x ? -60 : 0);
+  const path = ctx.arrow(fromX, fromY, dest.x, dest.y, { color: colorOf('notify'), curve, dash: '3 3', width: 1.25 });
+  path.setAttribute('opacity', 0.55);
+
+  const env = envelope(ctx, colorOf('notify'));
+  ctx.setPos(env, fromX, fromY);
+  await ctx.along(env, path, 900, ctx.ease.inOut);
+  path.remove();
+  if (!ctx.alive) { env.remove(); return; }
+  await ctx.move(env, trayPoint.x, trayPoint.y, 200);
+  await ctx.fade(env, 0, 160);
+  env.remove();
+  if (!ctx.alive) return;
+
+  say(`ExternalAgentNotification lands in ${p.label}'s inbox — the durable part is done`);
+  setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
+  await ctx.pulse(trayPoint.x, trayPoint.y, colorOf('notify'), 16, 400);
+
+  // activation: wakes a fleet node (guaranteed free — never shared)
+  let node = await pickFreeNode(ctx, nodes);
+  say(`activation wakes ${node.name} to boot ${p.label}`);
+  await activationBolt(ctx, world, p, node);
+  if (!ctx.alive) return;
+
+  setNodeActive(ctx, node, p);
+  setStatus(ctx, p.panel, 'running');
+  setInboxCount(ctx, p.panel, 0);
+  say(`${p.label} resumes its trajectory exactly where it left off on ${node.name}`);
+
+  const totalTicks = 5 + Math.floor(Math.random() * 3);
+  const suspendAt = Math.random() < 0.4 ? 2 + Math.floor(Math.random() * Math.max(1, totalTicks - 3)) : -1;
+
+  for (let i = 0; i < totalTicks; i++) {
+    if (!ctx.alive) return;
+    tick(ctx, p.panel, BUILD_SEQ[i % BUILD_SEQ.length]);
+    await ctx.wait(360 + Math.random() * 240);
+
+    if (i === Math.floor(totalTicks / 2)) {
+      say(`${p.label} posts a progress update — it lands in the chat agent's inbox`);
+      ctx.spawn(() => sendBack(ctx, world, p, 'notify'));
+    }
+
+    if (i === suspendAt && ctx.alive) {
+      setStatus(ctx, p.panel, 'suspended');
+      p.panel.activity.textContent = 'suspended at iteration boundary';
+      setNodeActive(ctx, node, null);
+      say(`${p.label} suspends at an iteration boundary — it will resume on a fresh node`);
+      await ctx.wait(700 + Math.random() * 500);
+      if (!ctx.alive) return;
+      node = await pickFreeNode(ctx, nodes);
+      say(`activation wakes ${node.name} to resume ${p.label}`);
+      await activationBolt(ctx, world, p, node);
+      if (!ctx.alive) return;
+      setNodeActive(ctx, node, p);
+      setStatus(ctx, p.panel, 'running');
+      // keep the activity line in lockstep with status until the next real
+      // tick lands, so no box ever shows a stale mismatched combination.
+      p.panel.activity.textContent = 'resuming…';
+    }
+  }
+
+  if (!ctx.alive) return;
+  tick(ctx, p.panel, 'agent');
+  say(`${p.label} finishes: AgentDone closes the turn, one more notification carries the result upstream`);
+  setNodeActive(ctx, node, null);
+  setStatus(ctx, p.panel, 'asleep');
+  p.panel.activity.textContent = 'idle · waiting for a task';
+  await sendBack(ctx, world, p, 'agent');
+  p.busy = false;
+}
+
+async function sendBack(ctx, world, p, kind) {
+  if (!ctx.alive) return;
+  const { chat, chatPanel, chatWake } = world;
+  const from = p.panel.trayPoint;
+  const trayPoint = { x: chat.x + chat.w - 30 + 11, y: chat.y + 9 + 8 };
+  const dest = { x: trayPoint.x - 22, y: trayPoint.y };
+  const curve = (p.x + p.w / 2 < chat.x) ? -50 : (p.x > chat.x ? 50 : 0);
+  const color = ctx.colorOf('notify');
+  const path = ctx.arrow(from.x, from.y, dest.x, dest.y, { color, curve, dash: '3 3', width: 1.1 });
+  path.setAttribute('opacity', 0.5);
+  const env = envelope(ctx, color, kind === 'agent' ? ctx.COLORS.agent : color);
+  ctx.setPos(env, from.x, from.y);
+  await ctx.along(env, path, 850, ctx.ease.inOut);
+  path.remove();
+  if (!ctx.alive) { env.remove(); return; }
+  await ctx.move(env, trayPoint.x, trayPoint.y, 180);
+  await ctx.fade(env, 0, 150);
+  env.remove();
+  if (!ctx.alive) return;
+  chatWake();
+  tick(ctx, chatPanel, kind === 'agent' ? 'agent' : 'notify');
+  setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
+  await ctx.pulse(trayPoint.x, trayPoint.y, color, 14, 380);
+  await ctx.wait(500);
+  if (ctx.alive) setInboxCount(ctx, chatPanel, Math.max(0, chatPanel.inboxCount - 1));
+}
+
+function envelope(ctx, color, accent) {
+  const g = ctx.el('g', {});
+  ctx.el('rect', { x: -9, y: -6, width: 18, height: 12, rx: 2, fill: ctx.COLORS.panel, stroke: accent || color, 'stroke-width': 1.4 }, g);
+  ctx.el('path', { d: 'M-9,-6 L0,1 L9,-6', fill: 'none', stroke: accent || color, 'stroke-width': 1.4 }, g);
+  return g;
+}
+
+// Routes the activation along the existing orthogonal wiring (project's
+// vertical drop -> along the ACP bar -> up into the node) so the fleet
+// stays legible even with several deliveries in flight at once.
+async function activationBolt(ctx, world, p, node) {
+  const fromX = p.x + p.w / 2, fromY = p.y + p.h + 12;
+  // Route along the lower edge of the bar, below the "AGENT CONTROL PLANE"
+  // label, so the signal never draws over the text.
+  const barY = world.acpY + 14;
+  const toX = node.x, toY = node.y;
+  const bolt = ctx.el('path', {
+    d: `M${fromX},${fromY} L${fromX},${barY} L${toX},${barY} L${toX},${toY}`,
+    fill: 'none', stroke: ctx.COLORS.activation, 'stroke-width': 2, opacity: 0.9,
+  });
+  await ctx.draw(bolt, 380);
+  await ctx.wait(60);
+  await ctx.fade(bolt, 0, 200);
+  bolt.remove();
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
