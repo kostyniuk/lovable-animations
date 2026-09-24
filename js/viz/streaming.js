@@ -51,9 +51,13 @@ function wrapText(node, text, maxWidth, fontSize, lh, maxLines = 3) {
   return lines.length;
 }
 
+// Seeded per run (ctx.random) so step-back replays make the same choices.
+let rand = Math.random;
+
 export default {
   width: W, height: H,
   async build(ctx) {
+    rand = ctx.random;
     const { el, box, eventPill, setPos, colorOf, COLORS } = ctx;
 
     // ---- static scaffold ----
@@ -291,7 +295,7 @@ export default {
     }
 
     async function streamBlock(kind, label, words) {
-      await openPartial(`p_${Math.random().toString(16).slice(2, 6)}`, kind);
+      await openPartial(`p_${rand().toString(16).slice(2, 6)}`, kind);
       for (const w of words) {
         if (!ctx.alive) return;
         await sendDelta(w, kind);
@@ -396,7 +400,7 @@ export default {
       '<strong>materialized once</strong> — deltas already folded in — then follows the live channel in sync.'
     );
     {
-      const id = `p_${Math.random().toString(16).slice(2, 6)}`;
+      const id = `p_${rand().toString(16).slice(2, 6)}`;
       await openPartial(id, 'thinking');
       const half = THINK_WORDS.slice(0, 4);
       for (const w of half) { if (!ctx.alive) return; await sendDelta(w, 'thinking'); await ctx.wait(60); }

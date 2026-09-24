@@ -15,7 +15,7 @@ Eight SVG animations, one per idea in the article:
 - **06 Suspend and resume** — runs that survive deploys and dead sandboxes
 - **07 Chats** — fan-out to project builders, progress and results back up
 
-Each figure autoplays when scrolled into view and has Play/Pause, Step, Reset and a speed slider.
+Each figure autoplays when scrolled into view and has Play/Pause, Back, Step, Reset and a speed slider (0.1×–2×). Back replays the scene deterministically (seeded randomness, recorded button clicks) up to the previous beat.
 
 ## Run locally
 

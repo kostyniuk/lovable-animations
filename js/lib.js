@@ -164,19 +164,52 @@ export function pointOnPath(path, t) {
 }
 
 // ---------- Scene runner ----------
+// All timing runs on a per-scene virtual clock. In normal playback it advances
+// with real time × speed. To step back, the scene is rebuilt with the same
+// random seed and the clock is fast-forwarded event by event to the previous
+// beat, replaying the reader's button clicks at the moments they happened.
+
+const DEFAULT_SPEED = 0.6;
+
+// Resolves on the next macrotask (setTimeout(0) clamps to 4ms when nested).
+const channel = new MessageChannel();
+const taskQueue = [];
+channel.port1.onmessage = () => taskQueue.shift()?.();
+const nextTask = () => new Promise((r) => { taskQueue.push(r); channel.port2.postMessage(0); });
+
+// Seeded PRNG so a replayed scene makes the same "random" choices.
+function mulberry32(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const formatSpeed = (v) => `${+v.toFixed(2)}×`;
+
 export class Scene {
   constructor(figure, def) {
     this.figure = figure;
     this.def = def;
-    this.speed = 1;
+    this.speed = DEFAULT_SPEED;
     this.paused = true;
     this.gen = 0;
     this.visible = false;
     this.userPaused = false;
     this.stepMode = false;
     this.stepResolve = null;
+    this.clock = 0;
+    this.timers = new Set();
+    this.ff = false;       // fast-forwarding towards ffTarget
+    this.ffTarget = 0;
+    this.beatIndex = 0;    // beats reached in the current run
+    this.clicks = [];      // { id, at } button clicks, replayed on step back
+    this.seed = 0;
     this._buildDom();
     this._observe();
+    this._loop();
     this.reset(false);
   }
 
@@ -194,7 +227,10 @@ export class Scene {
     const bar = document.createElement('div');
     bar.className = 'viz-controls';
     this.playBtn = btn('▶ Play', () => this.togglePlay());
+    this.backBtn = btn('⏮ Back', () => this.stepBack());
+    this.backBtn.title = 'Step back to the previous beat';
     const stepBtn = btn('Step ⏭', () => this.step());
+    stepBtn.title = 'Play to the next beat, then hold';
     const resetBtn = btn('↺ Reset', () => this.reset(true));
     this.extraEl = document.createElement('div');
     this.extraEl.className = 'viz-extra';
@@ -202,16 +238,16 @@ export class Scene {
     const speedWrap = document.createElement('label');
     speedWrap.className = 'viz-speed';
     const speed = document.createElement('input');
-    Object.assign(speed, { type: 'range', min: '0.25', max: '3', step: '0.25', value: '1' });
+    Object.assign(speed, { type: 'range', min: '0.1', max: '2', step: '0.05', value: String(DEFAULT_SPEED) });
     const speedVal = document.createElement('span');
-    speedVal.textContent = '1×';
+    speedVal.textContent = formatSpeed(DEFAULT_SPEED);
     speed.addEventListener('input', () => {
       this.speed = parseFloat(speed.value);
-      speedVal.textContent = this.speed + '×';
+      speedVal.textContent = formatSpeed(this.speed);
     });
     speedWrap.append('speed', speed, speedVal);
 
-    bar.append(this.playBtn, stepBtn, resetBtn, this.extraEl, speedWrap);
+    bar.append(this.playBtn, this.backBtn, stepBtn, resetBtn, this.extraEl, speedWrap);
     this.figure.prepend(this.stage, this.captionEl, bar);
   }
 
@@ -222,6 +258,35 @@ export class Scene {
       else if (!this.visible) this.pause();
     }, { threshold: 0.35 });
     io.observe(this.figure);
+  }
+
+  _loop() {
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = Math.min(now - last, 100); // no big jump after a hidden tab
+      last = now;
+      if (!this.paused && !this.ff) {
+        this.clock += dt * this.speed;
+        this._process();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  _process() {
+    for (const tm of this.timers) {
+      const t = tm.dur <= 0 ? 1 : Math.min(1, (this.clock - tm.start) / tm.dur);
+      tm.onFrame(t);
+      if (t >= 1) { this.timers.delete(tm); tm.resolve(); }
+    }
+  }
+
+  _schedule(gen, dur, onFrame) {
+    if (gen !== this.gen) return Promise.reject(CANCEL);
+    return new Promise((resolve, reject) => {
+      this.timers.add({ start: this.clock, dur: Math.max(0, dur), onFrame, resolve, reject });
+    });
   }
 
   togglePlay() {
@@ -251,14 +316,38 @@ export class Scene {
     this.playBtn.textContent = '▶ Play';
     if (this.stepResolve) { const r = this.stepResolve; this.stepResolve = null; r(); }
   }
+  // Replay the run up to the beat before the one on screen, then hold there.
+  stepBack() {
+    if (!this.beatIndex) return;
+    this.userPaused = true;
+    this.stepMode = true;
+    this._run({ replay: true, target: Math.max(1, this.beatIndex - 1) });
+  }
 
   reset(userInitiated) {
+    if (userInitiated && this.stepMode) this.paused = true;
+    this._run({ replay: false });
+  }
+
+  _run({ replay, target = 0 }) {
     this.gen++;
+    for (const tm of this.timers) tm.reject(CANCEL);
+    this.timers.clear();
     this.stepResolve = null;
+    this.clock = 0;
+    this.beatIndex = 0;
+    this.buttonCount = 0;
+    if (!replay) {
+      this.seed = (Math.random() * 2 ** 32) >>> 0;
+      this.clicks = [];
+    }
     this.svg.innerHTML = '';
     this.extraEl.innerHTML = '';
     this.captionEl.textContent = '';
-    if (userInitiated && this.stepMode) this.paused = true;
+    this.ff = replay;
+    this.ffTarget = target;
+    this._syncBack();
+
     const gen = this.gen;
     const ctx = this._ctx(gen);
     Promise.resolve()
@@ -267,32 +356,36 @@ export class Scene {
         if (gen !== this.gen) return;
         if (this.def.loop === false) return;
         await ctx.wait(2200);
-        if (gen === this.gen) this.reset(false);
+        if (gen === this.gen) this._run({ replay: false });
       })
       .catch((e) => { if (e !== CANCEL) console.error(e); });
+    if (replay) this._fastForward(gen);
+  }
+
+  // Discrete-event fast-forward: jump the clock to the next timer deadline,
+  // let resulting microtasks settle, repeat — until ctx.beat() lands us.
+  async _fastForward(gen) {
+    for (let i = 0; i < 100000; i++) {
+      await nextTask();
+      if (!this.ff || gen !== this.gen) return;
+      if (!this.timers.size) break;
+      let next = Infinity;
+      for (const tm of this.timers) next = Math.min(next, tm.start + tm.dur);
+      this.clock = Math.max(this.clock, next);
+      this._process();
+    }
+    if (gen === this.gen && this.ff) { this.ff = false; this.pause(); }
+  }
+
+  _syncBack() {
+    this.backBtn.disabled = this.beatIndex < 1;
   }
 
   _ctx(gen) {
     const scene = this;
     const root = el('g', {}, this.svg);
     const alive = () => { if (gen !== scene.gen) throw CANCEL; };
-
-    // Frame loop that only advances while playing, scaled by speed.
-    const frames = (duration, onFrame) => new Promise((resolve, reject) => {
-      let elapsed = 0;
-      let last = performance.now();
-      const tick = (now) => {
-        if (gen !== scene.gen) return reject(CANCEL);
-        const dt = now - last;
-        last = now;
-        if (!scene.paused) elapsed += dt * scene.speed;
-        const t = duration <= 0 ? 1 : Math.min(1, elapsed / duration);
-        onFrame(t);
-        if (t >= 1) resolve();
-        else requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
+    const frames = (duration, onFrame) => scene._schedule(gen, duration, onFrame);
 
     const ctx = {
       svg: this.svg,
@@ -312,6 +405,11 @@ export class Scene {
 
       get alive() { return gen === scene.gen; },
 
+      // Seeded randomness and virtual time: use these instead of
+      // Math.random / performance.now so step-back replays match.
+      random: mulberry32(this.seed),
+      now: () => scene.clock,
+
       // Speed- and pause-aware delay.
       wait: (ms) => frames(ms, () => {}),
 
@@ -327,7 +425,6 @@ export class Scene {
           setPos(node, x0 + (x - x0) * k, y0 + (y - y0) * k);
         });
       },
-
       // Move a <g> along a path (its origin rides the path).
       along: (node, path, ms = 800, easing = ease.inOut) =>
         frames(ms, (t) => {
@@ -371,8 +468,17 @@ export class Scene {
       // then lingers `hold` ms so the reader can take it in.
       beat: async (html, hold = 900) => {
         alive();
+        scene.beatIndex++;
         scene.captionEl.innerHTML = html;
-        if (scene.stepMode) {
+        scene._syncBack();
+        if (scene.ff && scene.beatIndex >= scene.ffTarget) {
+          // Arrived at the step-back target: stop replaying and hold here.
+          scene.ff = false;
+          scene.clicks = scene.clicks.filter((c) => c.at <= scene.clock);
+          scene.stepMode = true;
+          scene.pause();
+        }
+        if (scene.stepMode && !scene.ff) {
           scene.paused = true;
           await new Promise((r) => { scene.stepResolve = r; });
           alive();
@@ -382,7 +488,19 @@ export class Scene {
 
       // Extra interactive button in the control bar (cleared on reset).
       button: (label, onClick, { title } = {}) => {
-        const b = btn(label, () => { if (gen === scene.gen) onClick(); });
+        const id = scene.buttonCount++;
+        const b = btn(label, () => {
+          if (gen !== scene.gen) return;
+          scene.clicks.push({ id, at: scene.clock });
+          onClick();
+        });
+        // On replay, re-fire this button's recorded clicks at their times.
+        for (const c of scene.clicks) {
+          if (c.id !== id) continue;
+          frames(c.at - scene.clock, () => {})
+            .then(() => { if (scene.clicks.includes(c)) onClick(); })
+            .catch(() => {});
+        }
         b.classList.add('viz-btn-accent');
         if (title) b.title = title;
         scene.extraEl.appendChild(b);

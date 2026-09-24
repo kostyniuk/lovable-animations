@@ -14,10 +14,14 @@
 // still-open agent block. Suspend snaps the connector; resume re-attaches a
 // fresh one from the new node to the very same tip.
 
+// Seeded per run (ctx.random) so step-back replays make the same choices.
+let rand = Math.random;
+
 export default {
   width: 900,
   height: 308,
   async build(ctx) {
+    rand = ctx.random;
     const { COLORS, colorOf } = ctx;
 
     // ---------------- static layout ----------------
@@ -392,7 +396,7 @@ export default {
 
       await ctx.beat('ACP sends a fresh activation with a <em>resume</em> reason — watch it travel the wire to the node that picks it up.');
       const candidates = nodes.filter((n) => n !== oldNode);
-      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      const target = candidates[Math.floor(rand() * candidates.length)];
       // oldNode's run is gone the moment someone else picks up the resume —
       // it goes back to plain idle (and, if this was a deploy, is already
       // caught up to the current version so it doesn't show a stale label).
