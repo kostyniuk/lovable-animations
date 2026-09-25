@@ -175,29 +175,17 @@ footer { margin-top: 120px; padding-top: 24px; border-top: 1px solid var(--borde
   .legend { padding: 12px 14px; gap: 6px 14px; }
 }
 
-/* ---------- playback mode switch (fixed, bottom right) ---------- */
-.mode-switch {
-  position: fixed; right: 18px; bottom: 18px; z-index: 10;
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px; border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(8px);
-  font: 500 12px var(--mono);
+/* ---------- per-figure Auto / Step-by-step switch ---------- */
+.viz-mode {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px; border-radius: 9px;
+  background: var(--bg); border: 1px solid var(--border);
 }
-.mode-switch .mode-label { color: var(--muted); padding: 0 6px 0 10px; letter-spacing: 0.06em; }
-.mode-switch button {
-  font: inherit; color: var(--muted); background: transparent;
-  border: 1px solid transparent; border-radius: 999px;
-  padding: 6px 12px; cursor: pointer;
+.viz-mode[hidden] { display: none; }
+.viz-mode .viz-btn {
+  height: 26px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--muted);
 }
-.mode-switch button:hover { color: var(--text); }
-.mode-switch button[aria-checked="true"] {
-  color: #ffd0e6; background: #2a1622; border-color: #4a2a3d;
-}
-.mode-switch button:focus-visible { outline: 2px solid #ff4fa3; outline-offset: 2px; }
-@media (max-width: 560px) {
-  .mode-switch { right: 10px; bottom: 10px; font-size: 11px; }
-  .mode-switch .mode-label { display: none; }
-}
+.viz-mode .viz-btn:hover { color: var(--text); background: transparent; border-color: transparent; }
+.viz-mode .viz-btn[aria-checked="true"] { color: #ffd0e6; background: #2a1622; border-color: #4a2a3d; }
+.viz-btn.is-playing { color: var(--muted); border-style: dashed; }

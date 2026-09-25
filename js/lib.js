@@ -256,21 +256,14 @@ function mulberry32(seed) {
 
 const formatSpeed = (v) => `${+v.toFixed(2)}×`;
 
-// ---------- playback mode ----------
-// "Step by step" mode: figures never run on their own. A figure plays up to
-// its next beat and holds; each Next plays exactly one more beat. The choice
-// is page-wide and remembered across visits.
+// ---------- step-by-step mode ----------
+// Per figure: in "Step by step" a figure never runs on its own. It plays up
+// to its next beat and holds; each Next plays exactly one more beat. The
+// choice is remembered per figure across visits.
 const scenes = [];
-const MODE_KEY = 'viz-step-mode';
-export const playback = {
-  manual: (() => { try { return localStorage.getItem(MODE_KEY) === '1'; } catch { return false; } })(),
-};
-
-export function setManualMode(on) {
-  playback.manual = on;
-  try { localStorage.setItem(MODE_KEY, on ? '1' : '0'); } catch { /* private mode */ }
-  for (const s of scenes) s._applyMode();
-}
+const modeKey = (scene) => `viz-step-mode:${scene.figure.id}`;
+const loadMode = (scene) => { try { return localStorage.getItem(modeKey(scene)) === '1'; } catch { return false; } };
+const saveMode = (scene) => { try { localStorage.setItem(modeKey(scene), scene.manual ? '1' : '0'); } catch { /* private mode */ } };
 
 // ← / → step the figure nearest the middle of the viewport.
 function sceneInView() {
@@ -317,6 +310,7 @@ export class Scene {
     this._loop();
     this.reset(false);
     scenes.push(this);
+    this.manual = !def.ambient && loadMode(this);
     this._applyMode();
   }
 
@@ -366,7 +360,21 @@ export class Scene {
     speedVal.className = 'viz-speed-val';
     speedWrap.append(speedLabel, speed, speedVal);
 
-    bar.append(transport, speedWrap, this.extraEl);
+    // Auto / Step-by-step switch (not for ambient figures without beats).
+    const mode = document.createElement('div');
+    mode.className = 'viz-mode';
+    mode.setAttribute('role', 'radiogroup');
+    mode.setAttribute('aria-label', 'Playback mode');
+    this.modeBtns = ['auto', 'manual'].map((m) => {
+      const b = btn(m === 'auto' ? 'Auto' : 'Step by step', () => this.setManual(m === 'manual'));
+      b.setAttribute('role', 'radio');
+      b.dataset.mode = m;
+      mode.appendChild(b);
+      return b;
+    });
+    if (this.def.ambient) mode.hidden = true;
+
+    bar.append(transport, mode, speedWrap, this.extraEl);
     this.figure.prepend(this.stage, this.captionEl, bar);
   }
 
@@ -374,7 +382,7 @@ export class Scene {
     const io = new IntersectionObserver(([entry]) => {
       this.visible = entry.isIntersecting;
       if (!this.visible) this.pause();
-      else if (playback.manual && this.stepMode) this._toNextBeat();
+      else if (this.manual && this.stepMode) this._toNextBeat();
       else if (!this.userPaused) this.play();
     }, { threshold: 0.35 });
     io.observe(this.figure);
@@ -434,13 +442,26 @@ export class Scene {
     this.stepMode = true;
     this.paused = false;
     this.playBtn.textContent = '▶ Play';
+    this._syncStepLabel(true);
     if (this.stepResolve) { const r = this.stepResolve; this.stepResolve = null; r(); }
   }
-  // Sync with the page-wide playback mode.
+  // In step-by-step mode, show that a beat is playing until it holds.
+  _syncStepLabel(playing) {
+    const busy = this.manual && playing;
+    this.stepBtn.textContent = busy ? 'Playing…' : this.manual ? 'Next ⏭' : 'Step ⏭';
+    this.stepBtn.classList.toggle('is-playing', busy);
+  }
+  setManual(on) {
+    this.manual = on;
+    saveMode(this);
+    this._applyMode();
+  }
+  // Sync controls and playback with this figure's mode.
   _applyMode() {
-    this.stepBtn.textContent = playback.manual ? 'Next ⏭' : 'Step ⏭';
-    this.stepBtn.title = playback.manual ? 'Play one beat, then hold' : 'Play to the next beat, then hold';
-    if (playback.manual) {
+    this._syncStepLabel(false);
+    this.stepBtn.title = this.manual ? 'Play one beat, then hold' : 'Play to the next beat, then hold';
+    for (const b of this.modeBtns) b.setAttribute('aria-checked', String((b.dataset.mode === 'manual') === this.manual));
+    if (this.manual) {
       // A figure mid-transition finishes its current beat, then holds.
       this.userPaused = true;
       this.stepMode = true;
@@ -454,7 +475,7 @@ export class Scene {
   }
   // Step mode: play up to the next beat unless already holding at one.
   _toNextBeat() {
-    if (!this.stepResolve) this.paused = false;
+    if (!this.stepResolve) { this.paused = false; this._syncStepLabel(true); }
   }
   // Replay the run up to the beat before the one on screen, then hold there.
   stepBack() {
@@ -467,7 +488,7 @@ export class Scene {
   reset(userInitiated) {
     if (userInitiated && this.stepMode) this.paused = true;
     this._run({ replay: false });
-    if (playback.manual && this.stepMode && this.visible) this._toNextBeat();
+    if (this.manual && this.stepMode && this.visible) this._toNextBeat();
   }
 
   _run({ replay, target = 0 }) {
@@ -621,6 +642,7 @@ export class Scene {
         }
         if (scene.stepMode && !scene.ff) {
           scene.paused = true;
+          scene._syncStepLabel(false);
           await new Promise((r) => { scene.stepResolve = r; });
           alive();
         }

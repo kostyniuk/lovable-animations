@@ -41,6 +41,7 @@ const STATUS = {
 };
 
 export default {
+  ambient: true, // continuous overview, no beats to step through
   width: 900,
   height: 480,
   loop: false,
