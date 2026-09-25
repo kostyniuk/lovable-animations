@@ -19,7 +19,7 @@ let rand = Math.random;
 
 export default {
   width: 900,
-  height: 308,
+  height: 314,
   async build(ctx) {
     rand = ctx.random;
     const { COLORS, colorOf } = ctx;
@@ -30,57 +30,69 @@ export default {
       { x: 215, label: 'node-2' },
       { x: 410, label: 'node-3' },
     ];
-    const nodeY = 16, nodeW = 175, nodeH = 72;
-    const sandbox = { x: 615, y: 16, w: 130, h: 72 };
-    const git = { x: 760, y: 16, w: 120, h: 72 };
-    const acp = { x: 380, y: 106, w: 140, h: 30 };
-    // the 18px gap between the node row (bottom 88) and the ACP box (top 106)
-    // carries two distinct connector bands so neither line ever crosses a box:
-    const acpBandY = 92;      // ACP <-> node activation spokes
-    const sandboxBandY = 100; // sandbox <-> owning-node attachment line
-    const trajLabelY = 168;
-    const trajX0 = 26, trajRowY0 = 182, trajRowH = 42, trajMaxX = 874;
+    const headerY = 14;
+    const nodeY = 22, nodeW = 175, nodeH = 72;
+    const nodeBottom = nodeY + nodeH;
+    const sandbox = { x: 615, y: nodeY, w: 120, h: nodeH };
+    const git = { x: 760, y: nodeY, w: 120, h: nodeH };
+    // Under the node row, three 10-unit lanes stack top to bottom: the
+    // sandbox attachment band, the ACP spoke band, then the ACP bar itself.
+    const sandboxBandY = nodeBottom + 10; // sandbox <-> owning-node attachment line
+    const acpBandY = nodeBottom + 20;     // ACP <-> node activation spokes
+    // The ACP bar (hero style) sits centered between node-2's and node-3's
+    // centre columns, so the node->trajectory connectors drop past its ends.
+    const ACP_H = 18, acpW = 170;
+    const acp = { x: 400 - acpW / 2, y: nodeBottom + 30, w: acpW, h: ACP_H };
+    // Trajectory: header (right-aligned, clear of every node column), then
+    // the connector lane, then the pill rows. Columns match the node row.
+    const trajLabelY = 172;
+    const connLaneY = 182;
+    const trajX0 = 20, trajRowY0 = 192, trajRowH = 46, trajMaxX = 880;
     const pillH = 32;
+    const bracketGap = 7;     // bracket centre below a pill row
+    const bracketW = 3;
+    const rightLaneX = (trajMaxX + 900) / 2; // margin lane to reach row-2 tips
 
     ctx.el('text', {
-      x: 20, y: 12, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+      x: 20, y: headerY, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
       'letter-spacing': '0.06em', text: 'FLEET · DISPOSABLE PROCESSES',
     });
     ctx.el('text', {
-      x: sandbox.x, y: 12, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+      x: sandbox.x, y: headerY, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
       'letter-spacing': '0.06em', text: 'DURABLE STATE',
     });
 
     const nodes = nodeDefs.map((n) => makeNode(ctx, n.x, nodeY, nodeW, nodeH, n.label));
 
     const sandboxBox = ctx.box({ x: sandbox.x, y: sandbox.y, w: sandbox.w, h: sandbox.h, title: null, color: COLORS.line });
-    ctx.el('text', { x: sandbox.w / 2, y: 16, 'text-anchor': 'middle', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: 'sandbox' }, sandboxBox);
-    const sandboxState = ctx.el('text', { x: sandbox.w / 2, y: 38, 'text-anchor': 'middle', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'attached' }, sandboxBox);
-    const sandboxAttach = ctx.el('text', { x: sandbox.w / 2, y: 56, 'text-anchor': 'middle', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: '—' }, sandboxBox);
+    ctx.el('text', { x: sandbox.w / 2, y: TITLE_Y, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 11, fill: COLORS.text, text: 'sandbox' }, sandboxBox);
+    const sandboxState = ctx.el('text', { x: sandbox.w / 2, y: sandbox.h / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'attached' }, sandboxBox);
+    const sandboxAttach = ctx.el('text', { x: sandbox.w / 2, y: sandbox.h - TITLE_Y, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: '—' }, sandboxBox);
 
     const gitBox = ctx.box({ x: git.x, y: git.y, w: git.w, h: git.h, title: null, color: COLORS.line });
-    ctx.el('text', { x: git.w / 2, y: 16, 'text-anchor': 'middle', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: 'git repo' }, gitBox);
-    ctx.el('text', { x: git.w / 2, y: 38, 'text-anchor': 'middle', class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'the durable' }, gitBox);
-    ctx.el('text', { x: git.w / 2, y: 51, 'text-anchor': 'middle', class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'project state' }, gitBox);
+    ctx.el('text', { x: git.w / 2, y: TITLE_Y, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 11, fill: COLORS.text, text: 'git repo' }, gitBox);
+    ctx.el('text', { x: git.w / 2, y: 39, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'the durable' }, gitBox);
+    ctx.el('text', { x: git.w / 2, y: 53, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'project state' }, gitBox);
 
     const sgArrow = ctx.arrow(sandbox.x + sandbox.w, sandbox.y + sandbox.h / 2, git.x, git.y + git.h / 2, {
-      color: COLORS.dim, width: 1.25, dash: '3 3',
+      color: COLORS.dim, width: 1, dash: '3 3',
     });
 
-    // ---------------- ACP: a real hub, wired to every node ----------------
-    const acpBox = ctx.box({ x: acp.x, y: acp.y, w: acp.w, h: acp.h, title: null, color: colorOf('activation') });
-    const acpDot = ctx.el('circle', { cx: 14, cy: acp.h / 2, r: 4, fill: colorOf('activation') }, acpBox);
-    ctx.el('text', { x: 26, y: acp.h / 2 + 4, class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: 'ACP · activations' }, acpBox);
-    ctx.spawn(async () => {
-      while (ctx.alive) {
-        await ctx.animate(1000, (t) => acpDot.setAttribute('opacity', 0.4 + 0.6 * Math.sin(t * Math.PI)));
-      }
+    // ---------------- ACP: the control-plane bar, wired to every node ----------------
+    ctx.el('rect', {
+      x: acp.x, y: acp.y, width: acp.w, height: acp.h, rx: acp.h / 2,
+      fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1,
     });
-    // permanent dim spokes from ACP to every node, routed through a dedicated
-    // band so they never cross the ACP box or a node — activations travel these
+    ctx.el('text', {
+      x: acp.x + acp.w / 2, y: acp.y + acp.h / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono',
+      'font-size': 10, fill: COLORS.muted, 'letter-spacing': '0.08em',
+      text: 'AGENT CONTROL PLANE',
+    });
+    // permanent dim spokes from the bar's top edge (the side facing the fleet)
+    // to each node's activation port, through their own band — activations travel these
     const acpSpokes = nodes.map((n) => {
       const fromX = acp.x + acp.w / 2, fromY = acp.y;
-      const toX = n.x + n.w / 2, toY = n.y + n.h;
+      const toX = n.portAcp, toY = nodeBottom;
       const d = `M${fromX},${fromY} L${fromX},${acpBandY} L${toX},${acpBandY} L${toX},${toY}`;
       const p = ctx.el('path', { d, fill: 'none', stroke: colorOf('activation'), 'stroke-width': 1, 'stroke-dasharray': '2 4', opacity: 0.28 });
       return p;
@@ -88,15 +100,17 @@ export default {
 
     // ---------------- sandbox <-> current-owner connector (rewires on resume) ----------------
     let sandboxLine = null;
+    // drops down the gutter between node-3 and the sandbox, then along its band
+    const sandboxGutterX = (nodes[2].x + nodes[2].w + sandbox.x) / 2;
     function sandboxElbow(node) {
       const fromX = sandbox.x, fromY = sandbox.y + sandbox.h / 2;
-      const toX = node.x + node.w / 2, toY = node.y + node.h;
-      return `M${fromX},${fromY} L${fromX - 30},${fromY} L${fromX - 30},${sandboxBandY} L${toX},${sandboxBandY} L${toX},${toY}`;
+      const toX = node.portSandbox, toY = nodeBottom;
+      return `M${fromX},${fromY} L${sandboxGutterX},${fromY} L${sandboxGutterX},${sandboxBandY} L${toX},${sandboxBandY} L${toX},${toY}`;
     }
     function attachSandboxLine(node, { instant = false } = {}) {
       if (sandboxLine) sandboxLine.remove();
       sandboxLine = ctx.el('path', {
-        d: sandboxElbow(node), fill: 'none', stroke: COLORS.tool, 'stroke-width': 1.5, opacity: 0,
+        d: sandboxElbow(node), fill: 'none', stroke: COLORS.tool, 'stroke-width': 2, opacity: 0,
       });
       if (instant) { sandboxLine.setAttribute('opacity', 0.8); return; }
       return ctx.fade(sandboxLine, 0.8, 300);
@@ -112,11 +126,11 @@ export default {
 
     // ---------------- trajectory lane: the hero ----------------
     ctx.el('text', {
-      x: trajX0, y: trajLabelY, class: 'mono', 'font-size': 11, fill: COLORS.muted,
+      x: trajMaxX, y: trajLabelY, 'text-anchor': 'end', class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
       'letter-spacing': '0.06em', text: 'TRAJECTORY · append-only',
     });
 
-    const bracketPath = ctx.el('path', { d: '', fill: 'none', stroke: colorOf('agent'), 'stroke-width': 3, 'stroke-linecap': 'round', opacity: 0 });
+    const bracketPath = ctx.el('path', { d: '', fill: 'none', stroke: colorOf('agent'), 'stroke-width': bracketW, 'stroke-linecap': 'round', opacity: 0 });
 
     let curX = trajX0, curY = trajRowY0;
     let bracketSegs = [];
@@ -124,7 +138,8 @@ export default {
     let lastPill = null; // { x, y, w } — the tip a node connector attaches to
 
     function redrawBracket() {
-      bracketPath.setAttribute('d', bracketSegs.map((s) => `M${s.x1},${s.y} L${s.x2},${s.y}`).join(' '));
+      const r = bracketW / 2; // round caps would overshoot the pill edges by r
+      bracketPath.setAttribute('d', bracketSegs.map((s) => `M${s.x1 + r},${s.y} L${s.x2 - r},${s.y}`).join(' '));
     }
     function extendBracket(x, y, w) {
       const seg = bracketSegs[bracketSegs.length - 1];
@@ -154,18 +169,28 @@ export default {
     // node <-> trajectory-tip connector: shows *who* is physically appending
     let ownerNode = null;
     let nodeConn = null;
-    function tipPoint() {
-      return lastPill ? { x: lastPill.x + lastPill.w / 2, y: lastPill.y } : null;
+    // Orthogonal route: straight down from the node's bottom centre to the
+    // lane above the pills, then onto the tip's top centre. A tip on a
+    // wrapped row is reached around the right margin and enters its right
+    // edge, so the line never crosses the row above.
+    function nodeConnPath() {
+      const nx = ownerNode.x + ownerNode.w / 2;
+      const head = `M${nx},${nodeBottom} L${nx},${connLaneY}`;
+      if (lastPill.y === trajRowY0) {
+        const tx = lastPill.x + lastPill.w / 2;
+        return `${head} L${tx},${connLaneY} L${tx},${lastPill.y}`;
+      }
+      const my = lastPill.y + pillH / 2;
+      return `${head} L${rightLaneX},${connLaneY} L${rightLaneX},${my} L${lastPill.x + lastPill.w},${my}`;
     }
     function updateNodeConn() {
       if (!ownerNode || !nodeConn || !lastPill) return;
-      const tip = tipPoint();
-      nodeConn.setAttribute('d', `M${ownerNode.x + ownerNode.w / 2},${ownerNode.y + ownerNode.h} L${tip.x},${tip.y}`);
+      nodeConn.setAttribute('d', nodeConnPath());
     }
     function attachNodeConn(node) {
       ownerNode = node;
       if (nodeConn) nodeConn.remove();
-      nodeConn = ctx.el('path', { d: '', fill: 'none', stroke: colorOf('iter'), 'stroke-width': 1.5, opacity: 0 });
+      nodeConn = ctx.el('path', { d: '', fill: 'none', stroke: colorOf('iter'), 'stroke-width': 2, 'stroke-linejoin': 'round', opacity: 0 });
       updateNodeConn();
       return ctx.fade(nodeConn, 0.8, 250);
     }
@@ -181,20 +206,19 @@ export default {
 
     // legend + counter: pinned just under the trajectory's current last row,
     // so it hugs the pills instead of leaving a gap under a short trajectory
-    let legendRow = 0;
     const legendDot = ctx.el('circle', { cx: trajX0 + 4, r: 4, fill: colorOf('agent') });
     const legendText = ctx.el('text', {
-      x: trajX0 + 16, class: 'mono', 'font-size': 11, fill: COLORS.muted,
+      x: trajX0 + 16, 'dominant-baseline': 'central', class: 'mono', 'font-size': 11, fill: COLORS.muted,
       text: 'open agent block = work to continue',
     });
     const lostCounter = ctx.el('text', {
-      x: trajMaxX, 'text-anchor': 'end', class: 'mono', 'font-size': 11, fill: colorOf('tool'),
+      x: trajMaxX, 'text-anchor': 'end', 'dominant-baseline': 'central', class: 'mono', 'font-size': 11, fill: colorOf('tool'),
       text: 'events lost: 0',
     });
+    // one shared centre line for dot, legend and counter
     function placeLegend(row) {
-      legendRow = row;
-      const y = trajRowY0 + row * trajRowH + pillH + 24;
-      legendDot.setAttribute('cy', y - 4);
+      const y = trajRowY0 + row * trajRowH + pillH + bracketGap + 16;
+      legendDot.setAttribute('cy', y);
       legendText.setAttribute('y', y);
       lostCounter.setAttribute('y', y);
     }
@@ -212,10 +236,14 @@ export default {
         placeLegend(Math.round((curY - trajRowY0) / trajRowH));
       }
       const p = ctx.eventPill({ x: curX, y: curY, name: label, type, label, w, h: pillH, ...opts });
-      p.querySelector('text').setAttribute('font-size', 12.5);
-      extendBracket(curX, curY + pillH + 7, w);
-      lastPill = { x: curX, y: curY, w };
+      const txt = p.querySelector('text');
+      txt.setAttribute('font-size', 12.5);
+      txt.setAttribute('y', pillH / 2);
+      txt.setAttribute('dominant-baseline', 'central');
+      // the block opens WITH AgentStart, so the bracket starts under it
       if (type === 'agent' && label === 'AgentStart') openBracketAt();
+      extendBracket(curX, curY + pillH + bracketGap, w);
+      lastPill = { x: curX, y: curY, w };
       curX += w + 10;
       updateNodeConn();
       return p;
@@ -349,7 +377,8 @@ export default {
     await snapNodeConn();
     hideChip(ctx, current);
     setNodeStatus(current, 'idle', COLORS.muted, COLORS.line);
-    await ctx.pulse(trajMaxX - 10, Number(lostCounter.getAttribute('y')) - 5, colorOf('tool'), 16, 500);
+    const lc = lostCounter.getBBox();
+    await ctx.pulse(lc.x + lc.width / 2, lc.y + lc.height / 2, colorOf('tool'), 16, 500);
     await ctx.beat(
       `<span class="t t-agent">AgentDone</span> closes the block. Whatever happened along the way — a deploy, a dead sandbox — ` +
       `every event made it onto one continuous trajectory. <strong>events lost: 0</strong>.`,
@@ -403,7 +432,7 @@ export default {
       setNodeStatus(oldNode, 'idle', COLORS.muted, COLORS.line);
       oldNode.verTxt.textContent = version;
       const spoke = acpSpokes[nodes.indexOf(target)];
-      await activationBolt(ctx, spoke, target, acp);
+      await activationBolt(ctx, spoke, target, acp, nodeBottom);
       setNodeStatus(target, 'resuming', colorOf('activation'));
       showChip(ctx, target, `run · turn ${iterCount}`);
       sandboxAttach.textContent = target.label;
@@ -422,13 +451,22 @@ export default {
 
 // ---------------- helpers ----------------
 
+// Three text rows inside every 72-high box: title, middle, status.
+const TITLE_Y = 16;
+
+// Bottom-edge ports: ACP spoke at w/4, trajectory connector at w/2,
+// sandbox line at 3w/4 — so no two wires ever share a segment.
 function makeNode(ctx, x, y, w, h, label) {
   const { COLORS } = ctx;
   const box = ctx.box({ x, y, w, h, title: null, color: COLORS.line });
-  ctx.el('text', { x: 12, y: 18, class: 'mono', 'font-size': 11.5, fill: COLORS.text, text: label }, box);
-  const verTxt = ctx.el('text', { x: w - 12, y: 18, 'text-anchor': 'end', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'v41' }, box);
-  const statusTxt = ctx.el('text', { x: 12, y: h - 10, class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'idle' }, box);
-  return { x, y, w, h, box, verTxt, statusTxt, label, status: 'idle', _chip: null };
+  const pad = 12;
+  ctx.el('text', { x: pad, y: TITLE_Y, 'dominant-baseline': 'central', class: 'mono', 'font-size': 11, fill: COLORS.text, text: label }, box);
+  const verTxt = ctx.el('text', { x: w - pad, y: TITLE_Y, 'text-anchor': 'end', 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'v41' }, box);
+  const statusTxt = ctx.el('text', { x: pad, y: h - TITLE_Y, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10, fill: COLORS.muted, text: 'idle' }, box);
+  return {
+    x, y, w, h, box, verTxt, statusTxt, label, status: 'idle', _chip: null,
+    portAcp: x + w / 4, portSandbox: x + (3 * w) / 4,
+  };
 }
 
 function setNodeStatus(node, text, color, lineColor) {
@@ -441,10 +479,11 @@ function setNodeStatus(node, text, color, lineColor) {
 // A glowing "run" chip inside the node, with a turn-number label.
 function showChip(ctx, node, label) {
   if (node._chip) { node._chipLabel.textContent = label; return; }
+  // middle row, left-aligned with the title and status (never overlaps a long status)
   const g = ctx.el('g', { opacity: 0 }, node.box);
-  ctx.setPos(g, node.w - 106, node.h - 24);
-  const dot = ctx.el('circle', { cx: 6, cy: 6, r: 5, fill: ctx.colorOf('iter') }, g);
-  const lbl = ctx.el('text', { x: 16, y: 10, class: 'mono', 'font-size': 9.5, fill: ctx.colorOf('iter'), text: label }, g);
+  ctx.setPos(g, 12, node.h / 2);
+  const dot = ctx.el('circle', { cx: 5, cy: 0, r: 5, fill: ctx.colorOf('iter') }, g);
+  const lbl = ctx.el('text', { x: 16, y: 0, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10, fill: ctx.colorOf('iter'), text: label }, g);
   node._chip = g;
   node._chipLabel = lbl;
   ctx.fade(g, 1, 250);
@@ -452,7 +491,7 @@ function showChip(ctx, node, label) {
     while (ctx.alive && node._chip === g) {
       await ctx.animate(700, (t) => {
         if (node._chip !== g) return;
-        dot.setAttribute('r', 4 + 2 * Math.sin(t * Math.PI));
+        dot.setAttribute('r', 4 + 1 * Math.sin(t * Math.PI));
       });
     }
   });
@@ -464,14 +503,16 @@ function hideChip(ctx, node) {
   ctx.fade(chip, 0, 250).then(() => chip.remove());
 }
 
-// Animate a bright activation bolt along an existing static spoke path,
-// briefly boosting its opacity so the route reads as one connected wire.
-async function activationBolt(ctx, spokePath, target, acp) {
-  await ctx.animate(150, (t) => spokePath.setAttribute('opacity', 0.28 + 0.62 * t));
-  const dot = ctx.el('circle', { r: 5, fill: ctx.colorOf('activation') });
-  await ctx.along(dot, spokePath, 420, ctx.ease.inOut);
-  const toX = target.x + target.w / 2, toY = target.y + target.h;
-  await ctx.pulse(toX, toY, ctx.colorOf('activation'), 18, 450);
-  dot.remove();
-  await ctx.animate(300, (t) => spokePath.setAttribute('opacity', 0.9 - 0.62 * t));
+// Same activation style as the hero: a pulse where it leaves the bar, then a
+// solid 2-unit bolt drawn along the spoke's exact route to the node's port.
+async function activationBolt(ctx, spokePath, target, acp, nodeBottom) {
+  const color = ctx.colorOf('activation');
+  await ctx.pulse(acp.x + acp.w / 2, acp.y, color, 16, 380);
+  const bolt = ctx.el('path', {
+    d: spokePath.getAttribute('d'), fill: 'none', stroke: color, 'stroke-width': 2, opacity: 0.9,
+  });
+  await ctx.draw(bolt, 420);
+  await ctx.pulse(target.portAcp, nodeBottom, color, 18, 450);
+  await ctx.fade(bolt, 0, 180);
+  bolt.remove();
 }

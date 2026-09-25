@@ -22,6 +22,7 @@ export const COLORS = {
   notify: '#22d3ee',      // ExternalAgentNotification
   activation: '#fde047',  // activation signal (not an event)
   revert: '#ef4444',      // Revert, failures
+  api: '#f0abfc',         // ACP calls, tools, streaming messages (captions)
   dim: '#3a3a44',
   line: '#56565f',
   text: '#ececf1',
@@ -53,6 +54,72 @@ export const EVENT_TYPE = {
 
 export const colorOf = (typeOrName) =>
   COLORS[typeOrName] || COLORS[EVENT_TYPE[typeOrName]] || COLORS.content;
+
+// ---------- identifier highlighting ----------
+// Names from the article (events, ACP calls, tools, protocol messages) get a
+// weighted, color-coded chip wherever they appear in captions and prose, so
+// the narration is easy to scan. Events use their family color; ACP calls,
+// tools and streaming messages share one accent.
+const API_NAMES = ['SpawnAgent', 'ForkAndSendMessage', 'SendMessage', 'NotifyParents', 'StopAgent',
+  'send_message_to_project', 'PartialOpened', 'PartialDelta'];
+const NAME_COLOR = {
+  ...Object.fromEntries(Object.keys(EVENT_TYPE).map((n) => [n, COLORS[EVENT_TYPE[n]]])),
+  ...Object.fromEntries(API_NAMES.map((n) => [n, COLORS.api])),
+};
+// Plain English words that are also event names only count when already marked up.
+const AMBIGUOUS = new Set(['thinking', 'content']);
+const NAME_RE = new RegExp(
+  '(?<![\\w-])(' + Object.keys(NAME_COLOR).filter((n) => !AMBIGUOUS.has(n))
+    .sort((a, b) => b.length - a.length).join('|') + ')(?![\\w-])', 'g');
+const SKIP = 'code, .ident, .t, .mono, .step-badge, a';
+
+function identChip(name, color) {
+  const chip = document.createElement('span');
+  chip.className = 'ident';
+  chip.style.setProperty('--c', color);
+  chip.textContent = name;
+  return chip;
+}
+
+// Highlight identifiers inside `root` in place; optionally capitalize the
+// first word unless the sentence opens with an identifier.
+export function highlight(root, { capitalize = false } = {}) {
+  // Existing markup naming an identifier adopts the same look.
+  for (const el of root.querySelectorAll('code, .mono')) {
+    const color = NAME_COLOR[el.textContent.trim()];
+    if (color) { el.classList.add('ident'); el.style.setProperty('--c', color); }
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) texts.push(walker.currentNode);
+  for (const node of texts) {
+    if (node.parentElement.closest(SKIP)) continue;
+    const text = node.textContent;
+    NAME_RE.lastIndex = 0;
+    if (!NAME_RE.test(text)) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    text.replace(NAME_RE, (m, name, i) => {
+      frag.append(text.slice(last, i), identChip(name, NAME_COLOR[name]));
+      last = i + m.length;
+    });
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+  if (capitalize) {
+    const first = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.textContent.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    }).nextNode();
+    if (first && !first.parentElement.closest(SKIP)) {
+      first.textContent = first.textContent.replace(/^(\s*)([a-z])/, (_, sp, c) => sp + c.toUpperCase());
+    }
+  }
+}
+
+function setCaption(el, html) {
+  el.innerHTML = html;
+  highlight(el, { capitalize: true });
+}
 
 // ---------- easing ----------
 export const ease = {
@@ -102,7 +169,7 @@ export function eventPill(parent, { x = 0, y = 0, name, type, label, w = 150, h 
   }, g);
   if (!partial) el('rect', { width: 4, height: h, rx: 2, fill: c }, g);
   el('text', {
-    x: partial ? 10 : 12, y: h / 2 + 4, class: 'mono', 'font-size': 11,
+    x: partial ? 10 : 12, y: h / 2, 'dominant-baseline': 'central', class: 'mono', 'font-size': 11,
     fill: partial ? c : COLORS.text, text: label ?? name,
   }, g);
   g._w = w;
@@ -189,6 +256,44 @@ function mulberry32(seed) {
 
 const formatSpeed = (v) => `${+v.toFixed(2)}×`;
 
+// ---------- playback mode ----------
+// "Step by step" mode: figures never run on their own. A figure plays up to
+// its next beat and holds; each Next plays exactly one more beat. The choice
+// is page-wide and remembered across visits.
+const scenes = [];
+const MODE_KEY = 'viz-step-mode';
+export const playback = {
+  manual: (() => { try { return localStorage.getItem(MODE_KEY) === '1'; } catch { return false; } })(),
+};
+
+export function setManualMode(on) {
+  playback.manual = on;
+  try { localStorage.setItem(MODE_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+  for (const s of scenes) s._applyMode();
+}
+
+// ← / → step the figure nearest the middle of the viewport.
+function sceneInView() {
+  const mid = innerHeight / 2;
+  let best = null, bestDist = Infinity;
+  for (const s of scenes) {
+    const r = s.figure.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > innerHeight) continue;
+    const d = Math.abs((r.top + r.bottom) / 2 - mid);
+    if (d < bestDist) { best = s; bestDist = d; }
+  }
+  return best;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+  if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  const scene = sceneInView();
+  if (!scene) return;
+  e.preventDefault();
+  if (e.key === 'ArrowRight') scene.step();
+  else scene.stepBack();
+});
+
 export class Scene {
   constructor(figure, def) {
     this.figure = figure;
@@ -211,6 +316,8 @@ export class Scene {
     this._observe();
     this._loop();
     this.reset(false);
+    scenes.push(this);
+    this._applyMode();
   }
 
   _buildDom() {
@@ -229,11 +336,19 @@ export class Scene {
     this.playBtn = btn('▶ Play', () => this.togglePlay());
     this.backBtn = btn('⏮ Back', () => this.stepBack());
     this.backBtn.title = 'Step back to the previous beat';
-    const stepBtn = btn('Step ⏭', () => this.step());
+    const stepBtn = (this.stepBtn = btn('Step ⏭', () => this.step()));
     stepBtn.title = 'Play to the next beat, then hold';
     const resetBtn = btn('↺ Reset', () => this.reset(true));
+    this.playBtn.classList.add('viz-btn-play');
+    const transport = document.createElement('div');
+    transport.className = 'viz-transport';
+    transport.setAttribute('role', 'group');
+    transport.setAttribute('aria-label', 'Playback');
+    transport.append(this.playBtn, this.backBtn, stepBtn, resetBtn);
     this.extraEl = document.createElement('div');
     this.extraEl.className = 'viz-extra';
+    this.extraEl.setAttribute('role', 'group');
+    this.extraEl.setAttribute('aria-label', 'Figure actions');
 
     const speedWrap = document.createElement('label');
     speedWrap.className = 'viz-speed';
@@ -245,17 +360,22 @@ export class Scene {
       this.speed = parseFloat(speed.value);
       speedVal.textContent = formatSpeed(this.speed);
     });
-    speedWrap.append('speed', speed, speedVal);
+    const speedLabel = document.createElement('span');
+    speedLabel.className = 'viz-speed-label';
+    speedLabel.textContent = 'speed';
+    speedVal.className = 'viz-speed-val';
+    speedWrap.append(speedLabel, speed, speedVal);
 
-    bar.append(this.playBtn, this.backBtn, stepBtn, resetBtn, this.extraEl, speedWrap);
+    bar.append(transport, speedWrap, this.extraEl);
     this.figure.prepend(this.stage, this.captionEl, bar);
   }
 
   _observe() {
     const io = new IntersectionObserver(([entry]) => {
       this.visible = entry.isIntersecting;
-      if (this.visible && !this.userPaused) this.play();
-      else if (!this.visible) this.pause();
+      if (!this.visible) this.pause();
+      else if (playback.manual && this.stepMode) this._toNextBeat();
+      else if (!this.userPaused) this.play();
     }, { threshold: 0.35 });
     io.observe(this.figure);
   }
@@ -316,6 +436,26 @@ export class Scene {
     this.playBtn.textContent = '▶ Play';
     if (this.stepResolve) { const r = this.stepResolve; this.stepResolve = null; r(); }
   }
+  // Sync with the page-wide playback mode.
+  _applyMode() {
+    this.stepBtn.textContent = playback.manual ? 'Next ⏭' : 'Step ⏭';
+    this.stepBtn.title = playback.manual ? 'Play one beat, then hold' : 'Play to the next beat, then hold';
+    if (playback.manual) {
+      // A figure mid-transition finishes its current beat, then holds.
+      this.userPaused = true;
+      this.stepMode = true;
+      this.playBtn.textContent = '▶ Play';
+      if (this.visible) this._toNextBeat();
+    } else {
+      this.stepMode = false;
+      this.userPaused = false;
+      if (this.visible) this.play();
+    }
+  }
+  // Step mode: play up to the next beat unless already holding at one.
+  _toNextBeat() {
+    if (!this.stepResolve) this.paused = false;
+  }
   // Replay the run up to the beat before the one on screen, then hold there.
   stepBack() {
     if (!this.beatIndex) return;
@@ -327,6 +467,7 @@ export class Scene {
   reset(userInitiated) {
     if (userInitiated && this.stepMode) this.paused = true;
     this._run({ replay: false });
+    if (playback.manual && this.stepMode && this.visible) this._toNextBeat();
   }
 
   _run({ replay, target = 0 }) {
@@ -462,14 +603,14 @@ export class Scene {
       },
 
       // Narration line under the stage.
-      caption: (html) => { alive(); scene.captionEl.innerHTML = html; },
+      caption: (html) => { alive(); setCaption(scene.captionEl, html); },
 
       // A narrative checkpoint: sets the caption, holds in step mode,
       // then lingers `hold` ms so the reader can take it in.
       beat: async (html, hold = 900) => {
         alive();
         scene.beatIndex++;
-        scene.captionEl.innerHTML = html;
+        setCaption(scene.captionEl, html);
         scene._syncBack();
         if (scene.ff && scene.beatIndex >= scene.ffTarget) {
           // Arrived at the step-back target: stop replaying and hold here.

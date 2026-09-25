@@ -12,28 +12,39 @@ const PROJECTS = [
   { key: 'dashboard', label: 'dashboard', abbr: 'dash', cx: 515, ask: 'dark mode', files: 6, credits: '2.1', ok: true },
   { key: 'mobile-app', label: 'mobile-app', abbr: 'mob', cx: 710, ask: 'login bug fix', files: 2, credits: '0.8', ok: false },
 ];
-// CARD_H is sized to the longest trajectory any project reaches (mobile-app:
-// 3 pills from its busy fold-in + 4 more from its own run = 7), so the strip
-// area (CARD_H - 60) fits exactly 7 pills with no dead space and no scroll.
-const CARD_W = 170, CARD_Y = 224, CARD_H = 236;
-const CHAT_X = 320, CHAT_Y = 20, CHAT_W = 560, CHAT_H = 140;
+const PAD = 12; // inner padding of cards and the transcript window
+const INBOX_R = 5; // inbox circle radius
+const CHAT_X = 320, CHAT_Y = 20, CHAT_W = 560, CHAT_H = 134;
 // The inbox mark lives on the bottom-center of the card's edge, so envelope
 // paths never have to cross into the card interior (subtitle / trajectory
 // chips) or diagonally through any project's title label.
 const CHAT_INBOX = { x: CHAT_X + CHAT_W / 2, y: CHAT_Y + CHAT_H };
 
 // The Agent Control Plane: a slim bar every message must cross, spanning the
-// full width of the project row. The chat agent connects to its top edge;
-// each project connects to its bottom edge, lined up with that project's own
-// inbox x. Messages ride the interior route line (BAR_ROUTE_Y) between those
+// full width of the project row (same style as the hero: 18 tall, fully
+// rounded, label vertically centered inside). The chat agent connects to its
+// top edge; each project connects to its bottom edge, lined up with that
+// project's own inbox x. Messages ride the bar's center line between those
 // stubs — never box to box.
 const BAR_X = CHAT_X, BAR_W = CHAT_W, BAR_Y = CHAT_Y + CHAT_H + 20, BAR_H = 18;
-// The route line sits low in the bar and the label sits high, with clear
-// vertical separation between them, so a traveling envelope's dashed path
-// never crosses the label text (see barTitle below, which is also
-// left-aligned so the chat column's vertical drop — dead center of the bar
-// — never runs through it either).
-const BAR_ROUTE_Y = BAR_Y + BAR_H - 4;
+const BAR_MID = BAR_Y + BAR_H / 2;
+
+// Project cards sit far enough below the bar for the "already running · ack"
+// tag to fit between the bar and the card titles. CARD_H is sized to the
+// longest trajectory any project reaches (mobile-app: 3 pills from its busy
+// fold-in + 4 more from its own run = 7): the strip (CARD_H - 56) fits exactly
+// 7 pills, and the cards end level with the transcript window.
+const CARD_W = 170, CARD_Y = BAR_Y + BAR_H + 36, CARD_H = 232;
+// A project's inbox sits on its card's top edge, toward the right: the card
+// title is left-aligned above the card, so the stub into the bar stays clear
+// of even the longest project name.
+const INBOX_INSET = 15;
+const inboxX = (p) => p.cx + CARD_W - INBOX_INSET;
+const ENV_HALF_W = 9; // the envelope glyph is 18 wide
+// The bar label is centered in the stretch of bar left of every route (up
+// to the envelope's edge at the leftmost project stub), so no envelope ever
+// travels across it.
+const BAR_LABEL_X = (BAR_X + inboxX(PROJECTS[0]) - ENV_HALF_W) / 2;
 
 // ---------- small text-wrap helper (plain SVG <text>/<tspan>, no foreignObject) ----------
 function wrap(str, maxChars) {
@@ -56,27 +67,33 @@ export default {
     const { COLORS, colorOf, el } = ctx;
 
     // ================= left: Chats transcript window =================
-    ctx.box({ x: 20, y: 20, w: 280, h: 430, title: 'Chats' });
+    // Same outer margin (20) on all four sides of the figure.
+    const WIN_X = 20, WIN_Y = 20, WIN_W = 280, WIN_H = H - 40;
+    ctx.box({ x: WIN_X, y: WIN_Y, w: WIN_W, h: WIN_H, title: 'Chats' });
     const clip = el('clipPath', { id: 'chats-clip' }, ctx.svg.querySelector('defs') || el('defs', {}, ctx.svg));
-    el('rect', { x: 20, y: 20, width: 280, height: 430, rx: 10 }, clip);
+    el('rect', { x: WIN_X, y: WIN_Y, width: WIN_W, height: WIN_H, rx: 10 }, clip);
     const feed = el('g', { 'clip-path': 'url(#chats-clip)' });
     ctx.root.appendChild(feed);
     const feedInner = el('g', {}, feed);
-    let feedY = 34;
-    const FEED_X = 32, FEED_W = 256, FEED_BOTTOM = 440;
+    const FEED_X = WIN_X + PAD, FEED_W = WIN_W - 2 * PAD, FEED_BOTTOM = WIN_Y + WIN_H - PAD;
+    const FEED_GAP = 10;
+    let feedY = WIN_Y + PAD;
 
-    async function scrollIfNeeded(nextY) {
-      const overflow = nextY - FEED_BOTTOM;
+    // Scrolls so the newest item's bottom edge sits PAD above the window's.
+    // Moves to an absolute target, so concurrent rows never compound.
+    let feedShift = 0;
+    async function scrollIfNeeded(bottom) {
+      const overflow = bottom - feedShift - FEED_BOTTOM;
       if (overflow > 0) {
-        const p = ctx.getPos(feedInner);
-        await ctx.move(feedInner, p.x, p.y - overflow, 380);
+        feedShift += overflow;
+        await ctx.move(feedInner, 0, -feedShift, 380);
       }
     }
 
     // A chat bubble (user = orange-tinted right-ish, assistant = panel card).
     async function addBubble(text, { user = false } = {}) {
       const lines = wrap(text, 34);
-      const lh = 15, padY = 10, h = lines.length * lh + padY * 2 - 3;
+      const lh = 15, padY = 9, h = lines.length * lh + padY * 2;
       const w = FEED_W;
       const g = el('g', {}, feedInner);
       ctx.setPos(g, FEED_X, feedY);
@@ -88,12 +105,14 @@ export default {
       }, g);
       lines.forEach((ln, i) => {
         el('text', {
-          x: 12, y: padY + 4 + i * lh, 'font-size': 12, fill: COLORS.text, text: ln,
+          x: PAD, y: padY + lh / 2 + i * lh, 'dominant-baseline': 'central',
+          'font-size': 12, fill: COLORS.text, text: ln,
         }, g);
       });
       g.setAttribute('opacity', 0);
-      feedY += h + 10;
-      await scrollIfNeeded(feedY);
+      const bottom = feedY + h;
+      feedY = bottom + FEED_GAP;
+      await scrollIfNeeded(bottom);
       await ctx.fade(g, 1, 220);
       return g;
     }
@@ -101,32 +120,41 @@ export default {
     // A slim status/progress row with a colored dot + mono text (wraps if long).
     async function addRow(text, color) {
       const lines = wrap(text, 36);
-      const lh = 14;
+      const lh = 14, rowH = 10; // one line of 10.5 mono, dot centered on it
       const g = el('g', {}, feedInner);
       ctx.setPos(g, FEED_X, feedY);
-      el('circle', { cx: 4, cy: 5, r: 4, fill: color }, g);
+      el('circle', { cx: 4, cy: rowH / 2, r: 4, fill: color }, g);
       lines.forEach((ln, i) => {
-        el('text', { x: 14, y: 9 + i * lh, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: ln }, g);
+        el('text', {
+          x: 14, y: rowH / 2 + i * lh, 'dominant-baseline': 'central',
+          class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: ln,
+        }, g);
       });
       g.setAttribute('opacity', 0);
-      feedY += 8 + lines.length * lh;
-      await scrollIfNeeded(feedY);
+      const bottom = feedY + rowH + (lines.length - 1) * lh;
+      feedY = bottom + FEED_GAP;
+      await scrollIfNeeded(bottom);
       await ctx.fade(g, 1, 220);
       return g;
     }
 
     // ================= right-top: chat agent card =================
+    // Inner layout: 16 in from the left, with the trajectory strip 16 above
+    // the bottom edge.
+    const CHAT_PAD = 16;
     ctx.box({ x: CHAT_X, y: CHAT_Y, w: CHAT_W, h: CHAT_H, title: 'chat agent · workspace' });
     el('text', {
-      x: CHAT_X + 16, y: CHAT_Y + 30, 'font-size': 11, fill: COLORS.muted,
+      x: CHAT_X + CHAT_PAD, y: CHAT_Y + 20, 'dominant-baseline': 'central', 'font-size': 11, fill: COLORS.muted,
       text: 'own trajectory · sees every project',
     }, ctx.root);
 
-    // inbox mark — sits on the card's bottom edge
-    const chatInboxDot = el('circle', { cx: CHAT_INBOX.x, cy: CHAT_INBOX.y, r: 5, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.5 }, ctx.root);
+    // inbox mark — sits on the card's bottom edge; its label sits beside it,
+    // centered in the gap between the card and the bar (clear of the strip
+    // and of envelopes riding the stub).
+    const chatInboxDot = el('circle', { cx: CHAT_INBOX.x, cy: CHAT_INBOX.y, r: INBOX_R, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.5 }, ctx.root);
     el('text', {
-      x: CHAT_INBOX.x, y: CHAT_INBOX.y - 12, class: 'mono', 'font-size': 10.5, fill: COLORS.notify,
-      'text-anchor': 'middle', text: 'inbox',
+      x: CHAT_INBOX.x + ENV_HALF_W + 6, y: (CHAT_INBOX.y + BAR_Y) / 2, 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 10, fill: COLORS.notify, text: 'inbox',
     }, ctx.root);
 
     // the empty band between the subtitle and the trajectory strip: show the
@@ -134,7 +162,8 @@ export default {
     const callLines = {};
     PROJECTS.forEach((p, i) => {
       const t = el('text', {
-        x: CHAT_X + 16, y: CHAT_Y + 54 + i * 14, class: 'mono', 'font-size': 10.5, fill: COLORS.tool,
+        x: CHAT_X + CHAT_PAD, y: CHAT_Y + 40 + i * 14, 'dominant-baseline': 'central',
+        class: 'mono', 'font-size': 10.5, fill: COLORS.tool,
         text: `send_message_to_project(${p.label})`,
       }, ctx.root);
       t.setAttribute('opacity', 0);
@@ -144,58 +173,61 @@ export default {
     // horizontal trajectory strip (scrolling window)
     const stripDefs = ctx.svg.querySelector('defs') || el('defs', {}, ctx.svg);
     const stripClip = el('clipPath', { id: 'chat-strip-clip' }, stripDefs);
-    const STRIP_X = CHAT_X + 20, STRIP_Y = CHAT_Y + 110, STRIP_W = CHAT_W - 40;
-    el('rect', { x: STRIP_X, y: STRIP_Y - 2, width: STRIP_W, height: 24 }, stripClip);
+    const STRIP_H = 20;
+    const STRIP_X = CHAT_X + CHAT_PAD, STRIP_Y = CHAT_Y + CHAT_H - CHAT_PAD - STRIP_H, STRIP_W = CHAT_W - 2 * CHAT_PAD;
+    el('rect', { x: STRIP_X, y: STRIP_Y - 2, width: STRIP_W, height: STRIP_H + 4 }, stripClip);
     const stripG = el('g', { 'clip-path': 'url(#chat-strip-clip)' }, ctx.root);
     const stripInner = el('g', {}, stripG);
     ctx.setPos(stripInner, STRIP_X, STRIP_Y);
-    el('text', { x: STRIP_X, y: STRIP_Y - 10, class: 'mono', 'font-size': 10, fill: COLORS.muted, text: 'TRAJECTORY' }, ctx.root);
+    el('text', {
+      x: STRIP_X, y: STRIP_Y - 10, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10,
+      fill: COLORS.muted, 'letter-spacing': '0.06em', text: 'TRAJECTORY',
+    }, ctx.root);
 
-    function makeStrip(inner, w, pillW = 62, pillH = 20, gap =6) {
+    function makeStrip(inner, w, pillW = 62, pillH = 20, gap = 6) {
       let cursor = 0, shift = 0;
+      const { x: x0, y: y0 } = ctx.getPos(inner);
       return {
         async push(label, type) {
           const p = ctx.eventPill({ x: cursor, y: 0, name: type, type, label, w: pillW, h: pillH }, inner);
           p.setAttribute('opacity', 0);
           cursor += pillW + gap;
-          const overflow = cursor - shift - w;
+          const overflow = cursor - gap - shift - w;
           const promises = [ctx.fade(p, 1, 180)];
           if (overflow > 0) {
+            // absolute target, so concurrent pushes never compound
             shift += overflow;
-            const pos = ctx.getPos(inner);
-            promises.push(ctx.move(inner, pos.x - overflow, pos.y, 320));
+            promises.push(ctx.move(inner, x0 - shift, y0, 320));
           }
           await Promise.all(promises);
           return p;
         },
       };
     }
-    const chatStrip = makeStrip(stripInner, STRIP_W, 92, 20, 6);
+    const chatStrip = makeStrip(stripInner, STRIP_W, 92, STRIP_H, 6);
 
     // ================= the Agent Control Plane =================
     // A slim bar spanning the full project row. The chat agent connects to
     // its top edge (aligned with its own inbox); each project connects to
-    // its bottom edge (aligned with its own inbox). The label lives inside
-    // the bar, left-aligned and sitting high in it — small and muted at
-    // rest, naming the call in flight while a message rides through. Both
-    // its x (off the chat column's dead-center drop) and its y (above the
-    // low route line envelopes travel on) keep it clear of every line.
+    // its bottom edge (aligned with its own inbox). The label sits
+    // vertically centered in the bar, in the stretch no route crosses —
+    // muted at rest, naming the call in flight while a message rides through.
     el('rect', {
-      x: BAR_X, y: BAR_Y, width: BAR_W, height: BAR_H, rx: 9,
+      x: BAR_X, y: BAR_Y, width: BAR_W, height: BAR_H, rx: BAR_H / 2,
       fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1,
     }, ctx.root);
     const BAR_TITLE = 'AGENT CONTROL PLANE';
     const barTitle = el('text', {
-      x: BAR_X + 14, y: BAR_Y + 8, class: 'mono', 'font-size': 9.5,
-      fill: COLORS.muted, 'letter-spacing': '0.06em', text: BAR_TITLE,
+      x: BAR_LABEL_X, y: BAR_MID, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 10, fill: COLORS.muted, 'letter-spacing': '0.08em', text: BAR_TITLE,
     }, ctx.root);
 
     // Faint, permanent wiring (solid, low-opacity — the physical connection)
-    // touching only the bar's outer edges. The animated dashed line that
-    // actually shows a message riding a leg is drawn separately, on top,
-    // only while that leg is traveling.
+    // from the inbox circle's edge to the bar's outer edge. The animated
+    // dashed line that actually shows a message riding a leg is drawn
+    // separately, on top, only while that leg is traveling.
     el('path', {
-      d: `M${CHAT_INBOX.x},${CHAT_INBOX.y} L${CHAT_INBOX.x},${BAR_Y}`,
+      d: `M${CHAT_INBOX.x},${CHAT_INBOX.y + INBOX_R} L${CHAT_INBOX.x},${BAR_Y}`,
       fill: 'none', stroke: COLORS.notify, 'stroke-width': 1, 'stroke-opacity': 0.16,
     }, ctx.root);
 
@@ -211,6 +243,7 @@ export default {
       if (token !== labelToken) return;
       barTitle.textContent = text;
       barTitle.setAttribute('fill', color);
+      barTitle.setAttribute('letter-spacing', '0');
       await ctx.fade(barTitle, 1, 120);
       await ctx.wait(260);
       if (token !== labelToken) return;
@@ -218,6 +251,7 @@ export default {
       if (token !== labelToken) return;
       barTitle.textContent = BAR_TITLE;
       barTitle.setAttribute('fill', COLORS.muted);
+      barTitle.setAttribute('letter-spacing', '0.08em');
       await ctx.fade(barTitle, 1, 140);
     }
 
@@ -225,26 +259,26 @@ export default {
     const projState = {};
     for (const p of PROJECTS) {
       const cardX = p.cx;
-      // Anchor the guide line toward the right edge of the card: the box
-      // title is left-aligned, so this keeps the line clear of the label
-      // text (even for the longest project name) with room to spare.
-      const anchorX = cardX + CARD_W - 20;
+      const anchorX = inboxX(p);
       ctx.box({ x: cardX, y: CARD_Y, w: CARD_W, h: CARD_H, title: p.label });
+      // Inner layout: status row, TRAJECTORY header, then the pill strip,
+      // PAD in from the sides and bottom.
       const statusText = el('text', {
-        x: cardX + 12, y: CARD_Y + 26, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'idle',
-      }, ctx.root);
-      const inboxDot = el('circle', {
-        cx: anchorX, cy: CARD_Y, r: 5, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.5,
+        x: cardX + PAD, y: CARD_Y + 18, 'dominant-baseline': 'central',
+        class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'idle',
       }, ctx.root);
 
       const pDefs = ctx.svg.querySelector('defs') || el('defs', {}, ctx.svg);
       const pClip = el('clipPath', { id: `strip-clip-${p.key}` }, pDefs);
-      const SX = cardX + 12, SY = CARD_Y + 44, SW = CARD_W - 24, SH = CARD_H - 60;
-      el('rect', { x: SX - 2, y: SY, width: SW + 4, height: SH }, pClip);
+      const SX = cardX + PAD, SY = CARD_Y + 44, SW = CARD_W - 2 * PAD, SH = CARD_H - 44 - PAD;
+      el('rect', { x: SX - 2, y: SY - 1, width: SW + 4, height: SH + 2 }, pClip);
       const sg = el('g', { 'clip-path': `url(#strip-clip-${p.key})` }, ctx.root);
       const sinner = el('g', {}, sg);
       ctx.setPos(sinner, SX, SY);
-      el('text', { x: SX, y: SY - 8, class: 'mono', 'font-size': 10, fill: COLORS.muted, text: 'TRAJECTORY' }, ctx.root);
+      el('text', {
+        x: SX, y: SY - 10, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10,
+        fill: COLORS.muted, 'letter-spacing': '0.06em', text: 'TRAJECTORY',
+      }, ctx.root);
 
       // vertical strip variant
       let cursor = 0, shift = 0;
@@ -263,25 +297,28 @@ export default {
           const jobs = [ctx.fade(pill, 1, 180)];
           if (overflow > 0) {
             shift += overflow;
-            const pos = ctx.getPos(sinner);
-            jobs.push(ctx.move(sinner, pos.x, pos.y - overflow, 320));
+            jobs.push(ctx.move(sinner, SX, SY - shift, 320));
           }
           await Promise.all(jobs);
         },
       };
 
       projState[p.key] = {
-        ...p, cardX, statusText, inboxDot, vStrip,
+        ...p, cardX, statusText, vStrip,
         anchorTop: { x: anchorX, y: CARD_Y },
       };
 
       // the project's own stub into the bar — same x as its inbox, so the
       // envelope drops straight down with no diagonal (faint, permanent,
-      // touching only the bar's outer bottom edge).
+      // from the bar's outer bottom edge to the inbox circle's edge).
       el('path', {
-        d: `M${anchorX},${BAR_Y + BAR_H} L${anchorX},${CARD_Y}`,
+        d: `M${anchorX},${BAR_Y + BAR_H} L${anchorX},${CARD_Y - INBOX_R}`,
         fill: 'none', stroke: COLORS.notify, 'stroke-width': 1, 'stroke-opacity': 0.16,
       }, ctx.root);
+      const inboxDot = el('circle', {
+        cx: anchorX, cy: CARD_Y, r: INBOX_R, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.5,
+      }, ctx.root);
+      projState[p.key].inboxDot = inboxDot;
     }
 
     // ================= envelope routes, in two legs through the bar =================
@@ -293,33 +330,41 @@ export default {
       return direction === 'down'
         ? {
           p0: { x: CHAT_INBOX.x, y: CHAT_INBOX.y },
-          pMid: { x: CHAT_INBOX.x, y: BAR_ROUTE_Y },
-          pDrop: { x: ax, y: BAR_ROUTE_Y },
+          pMid: { x: CHAT_INBOX.x, y: BAR_MID },
+          pDrop: { x: ax, y: BAR_MID },
           p3: { x: ax, y: CARD_Y },
         }
         : {
           p0: { x: ax, y: CARD_Y },
-          pMid: { x: ax, y: BAR_ROUTE_Y },
-          pDrop: { x: CHAT_INBOX.x, y: BAR_ROUTE_Y },
+          pMid: { x: ax, y: BAR_MID },
+          pDrop: { x: CHAT_INBOX.x, y: BAR_MID },
           p3: { x: CHAT_INBOX.x, y: CHAT_INBOX.y },
         };
     }
 
-    // Flies a small notify-colored capsule along `d`. The dashed path itself
-    // is only drawn (faded in, then out) while this one leg is traveling.
-    async function flyLeg(d, ms = 700) {
-      const guide = el('path', {
-        d, fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.4,
-        'stroke-dasharray': '4 4', opacity: 0,
-      }, ctx.root);
+    // The envelope glyph, identical to the hero's.
+    function envelope() {
       const g = el('g', {}, ctx.root);
-      el('rect', { x: -8, y: -5, width: 16, height: 10, rx: 2, fill: COLORS.notify, opacity: 0.9 }, g);
-      el('path', { d: 'M-8,-5 L0,1 L8,-5', fill: 'none', stroke: COLORS.bg, 'stroke-width': 1 }, g);
-      await ctx.fade(guide, 0.85, 100);
-      await ctx.along(g, guide, ms, ctx.ease.inOut);
-      g.remove();
-      await ctx.fade(guide, 0, 140);
-      guide.remove();
+      el('rect', { x: -ENV_HALF_W, y: -6, width: 2 * ENV_HALF_W, height: 12, rx: 2, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.4 }, g);
+      el('path', { d: `M${-ENV_HALF_W},-6 L0,1 L${ENV_HALF_W},-6`, fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.4 }, g);
+      return g;
+    }
+
+    // Flies the envelope along `d`. The dashed path itself is only drawn
+    // while this one leg is traveling.
+    async function flyLeg(env, d, ms = 700) {
+      const guide = el('path', {
+        d, fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.1,
+        'stroke-dasharray': '3 3', opacity: 0,
+      }, ctx.root);
+      env.parentNode.appendChild(env); // keep the envelope above its guide
+      try {
+        await ctx.fade(guide, 0.5, 100);
+        await ctx.along(env, guide, ms, ctx.ease.inOut);
+        await ctx.fade(guide, 0, 140);
+      } finally {
+        guide.remove();
+      }
     }
 
     // The full two-leg carry: sender -> bar (drop, pulse, shared label) ->
@@ -330,22 +375,22 @@ export default {
       const leg1 = `M${p0.x},${p0.y} L${pMid.x},${pMid.y} L${pDrop.x},${pDrop.y}`;
       const leg2 = `M${pDrop.x},${pDrop.y} L${p3.x},${p3.y}`;
       const labelColor = direction === 'down' ? COLORS.tool : COLORS.notify;
+      const env = envelope();
+      ctx.setPos(env, p0.x, p0.y);
+      try {
+        await flyLeg(env, leg1, ms);
 
-      await flyLeg(leg1, ms);
+        // dropped on the bar: brief pulse + the shared label naming the call
+        showBarLabel(callName, labelColor);
+        await ctx.pulse(pDrop.x, pDrop.y, COLORS.notify, BAR_H / 2, 300);
+        await ctx.wait(90);
 
-      // dropped on the bar: brief pulse + the shared label naming the call
-      const parked = el('rect', {
-        x: pDrop.x - 8, y: pDrop.y - 5, width: 16, height: 10, rx: 2, fill: COLORS.notify, opacity: 0,
-      }, ctx.root);
-      await ctx.fade(parked, 0.9, 90);
-      showBarLabel(`ACP · ${callName}`, labelColor);
-      await ctx.pulse(pDrop.x, pDrop.y, COLORS.notify, 10, 300);
-      await ctx.wait(90);
-      await ctx.fade(parked, 0, 110);
-      parked.remove();
-
-      // ACP sends it on — a separate, faster hop to the recipient's inbox
-      await flyLeg(leg2, Math.round(ms * 0.7));
+        // ACP sends it on — a separate, faster hop to the recipient's inbox
+        await flyLeg(env, leg2, Math.round(ms * 0.7));
+        await ctx.fade(env, 0, 120);
+      } finally {
+        env.remove();
+      }
 
       const dot = direction === 'down' ? projState[key].inboxDot : chatInboxDot;
       await pulseInbox(dot);
@@ -367,7 +412,7 @@ export default {
     async function barBolt(x, yFrom, yTo) {
       const p = el('path', {
         d: `M${x},${yFrom} L${x},${yTo}`, fill: 'none', stroke: COLORS.activation,
-        'stroke-width': 2.5, opacity: 0.95,
+        'stroke-width': 2, opacity: 0.9,
       }, ctx.root);
       await ctx.draw(p, 240);
       await ctx.wait(60);
@@ -375,10 +420,10 @@ export default {
       p.remove();
     }
 
-    // wakes an idle builder: bolt from the bar's bottom edge into its inbox,
-    // then the activation pulse.
+    // wakes an idle builder: bolt from the bar's bottom edge to its inbox
+    // circle's edge, then the activation pulse.
     async function wakeActivation(st) {
-      await barBolt(st.anchorTop.x, BAR_Y + BAR_H, st.anchorTop.y);
+      await barBolt(st.anchorTop.x, BAR_Y + BAR_H, st.anchorTop.y - INBOX_R);
       await ctx.pulse(st.anchorTop.x, st.anchorTop.y, COLORS.activation, 16, 500);
     }
 
@@ -386,12 +431,12 @@ export default {
     // (bolt reaches it), but it's acknowledged and dropped — the queued
     // message folds in at the next IterationEnd instead.
     async function ackDropped(st) {
-      await barBolt(st.anchorTop.x, BAR_Y + BAR_H, st.anchorTop.y);
-      // Anchor from the right and clamp so the tag never runs past the
-      // canvas edge for the rightmost project card.
+      await barBolt(st.anchorTop.x, BAR_Y + BAR_H, st.anchorTop.y - INBOX_R);
+      // Right-aligned just left of the stub the bolt rode, in the band
+      // between the bar and the card title.
       const tag = el('text', {
-        x: Math.min(st.anchorTop.x + 56, W - 8), y: BAR_Y + BAR_H + 9, 'text-anchor': 'end',
-        class: 'mono', 'font-size': 9.5, fill: COLORS.activation, text: 'already running · ack',
+        x: st.anchorTop.x - 8, y: BAR_Y + BAR_H + 10, 'text-anchor': 'end', 'dominant-baseline': 'central',
+        class: 'mono', 'font-size': 10, fill: COLORS.activation, text: 'already running · ack',
       }, ctx.root);
       tag.setAttribute('opacity', 0);
       await ctx.fade(tag, 1, 160);
@@ -403,7 +448,7 @@ export default {
     // NotifyParents also activates the chat agent — bolt from the bar's top
     // edge up into its inbox.
     async function chatActivation() {
-      await barBolt(CHAT_INBOX.x, BAR_Y, CHAT_INBOX.y);
+      await barBolt(CHAT_INBOX.x, BAR_Y, CHAT_INBOX.y + INBOX_R);
       await ctx.pulse(CHAT_INBOX.x, CHAT_INBOX.y, COLORS.activation, 14, 450);
     }
 
@@ -430,7 +475,7 @@ export default {
       await ctx.wait(900);
 
       // mid-turn progress notification, carried back up through the ACP
-      await carryEnvelope('up', key, `NotifyParents ← ${st.label}`, 1100);
+      await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
       await chatActivation();
       await chatStrip.push(`Notif·${st.abbr}`, 'notify');
       await addRow(`${st.label}: ${st.ask}`, COLORS.notify);
@@ -444,7 +489,7 @@ export default {
       st.statusText.setAttribute('fill', st.ok ? COLORS.tool : COLORS.revert);
 
       // terminal notification, carried back up through the ACP
-      await carryEnvelope('up', key, `NotifyParents ← ${st.label}`, 1100);
+      await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
       await chatActivation();
       await chatStrip.push(`Notif·${st.abbr}`, 'notify');
       const check = st.ok ? '✓' : '✗';
@@ -482,7 +527,7 @@ export default {
       PROJECTS.map(async (p, i) => {
         await ctx.wait(i * 180);
         await Promise.all([ctx.fade(callLines[p.key], 1, 220), chatStrip.push(`→ ${p.abbr}`, 'tool')]);
-        await carryEnvelope('down', p.key, `SendMessage → ${p.label}`, 900);
+        await carryEnvelope('down', p.key, `SendMessage → ${p.abbr}`, 900);
         if (p.key === 'mobile-app') await ackDropped(projState[p.key]);
       }),
     );
@@ -529,7 +574,7 @@ export default {
       target.statusText.textContent = 'waking…';
       target.statusText.setAttribute('fill', COLORS.muted);
       await chatStrip.push(`→ ${target.abbr}`, 'tool');
-      await carryEnvelope('down', 'dashboard', 'SendMessage → dashboard', 800);
+      await carryEnvelope('down', 'dashboard', `SendMessage → ${target.abbr}`, 800);
       await addRow('dashboard — notified', COLORS.notify);
       await wakeActivation(target);
       target.statusText.textContent = 'running';
@@ -541,7 +586,7 @@ export default {
       await target.vStrip.push('AgentDone', 'agent');
       target.statusText.textContent = 'done';
       target.statusText.setAttribute('fill', COLORS.tool);
-      await carryEnvelope('up', 'dashboard', 'NotifyParents ← dashboard', 800);
+      await carryEnvelope('up', 'dashboard', `NotifyParents ← ${target.abbr}`, 800);
       await chatActivation();
       await chatStrip.push(`Notif·${target.abbr}`, 'notify');
       await addRow('dashboard ✓ 1 file · 0.3cr', COLORS.tool);

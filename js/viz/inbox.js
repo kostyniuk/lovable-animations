@@ -13,100 +13,156 @@
 
 import { COLORS, colorOf } from '../lib.js';
 
-const W = 900, H = 380;
+const W = 900, H = 370;
 
-const ACTOR_X = 20, ACTOR_W = 130;
+const ACTOR_X = 20, ACTOR_W = 110, ACTOR_H = 66;
+const ACTOR_R = ACTOR_X + ACTOR_W; // right edge: where every guide leaves
 const ACTORS = {
-  user: { y: 60, h: 66, label: 'User', kind: 'UserMessage', color: 'user' },
-  subagent: { y: 172, h: 66, label: 'Subagent', kind: 'ExternalAgentNotification', color: 'notify', tag: 'subagent done' },
-  scheduler: { y: 284, h: 66, label: 'Scheduler', kind: 'ExternalAgentNotification', color: 'notify', tag: 'wake-up' },
+  user: { y: 40, label: 'User', kind: 'UserMessage', color: 'user' },
+  subagent: { y: 157, label: 'Subagent', kind: 'ExternalAgentNotification', color: 'notify', tag: 'subagent done' },
+  scheduler: { y: 274, label: 'Scheduler', kind: 'ExternalAgentNotification', color: 'notify', tag: 'wake-up' },
 };
+const actorCY = (a) => a.y + ACTOR_H / 2;
+
+const INBOX_X = 220, INBOX_W = 240, INBOX_Y = 40, INBOX_H = 300;
+const INBOX_PAD = 15;
+const INBOX_ROW_TOP = INBOX_Y + 40;
+const CARD_W = INBOX_W - INBOX_PAD * 2, CARD_H = 32, CARD_GAP = 9;
 
 // ACP sits between the agent actors and the inbox: every inter-agent message
-// is relayed actor → ACP → inbox, in two hops, per the article.
-const ACP_X = 168, ACP_W = 46, ACP_H = 28, ACP_Y = 247;
-
-const INBOX_X = 220, INBOX_W = 240, INBOX_Y = 40, INBOX_H = 260;
-const INBOX_ROW_TOP = INBOX_Y + 40;
-const CARD_W = INBOX_W - 30, CARD_H = 32, CARD_GAP = 9;
+// is relayed actor → ACP → inbox, in two hops, per the article. Same pill
+// style as the Agent Control Plane bar in the hero. Messages enter on its
+// left edge, leave on its right edge; activations leave from its bottom edge.
+const ACP_W = 40, ACP_H = 18;
+const ACP_X = (ACTOR_R + INBOX_X - ACP_W) / 2;
+const ACP_CX = ACP_X + ACP_W / 2;
+const ACP_CY = (actorCY(ACTORS.subagent) + actorCY(ACTORS.scheduler)) / 2;
+const ACP_Y = ACP_CY - ACP_H / 2;
+const RELAY_X = (ACTOR_R + ACP_X) / 2; // lane where the two agent guides merge
 
 const TRAJ_X = 510, TRAJ_W = 370, TRAJ_Y = 40, TRAJ_H = 300;
-const TRAJ_ROW_TOP = TRAJ_Y + 66;
-const BLOCK_PAD = 14;
-const MAX_FLY_CHIPS = 4; // cap individual fly-in animations per admit batch
+const BLOCK_PAD = 15;                   // same inset as the inbox cards
+const CW = TRAJ_W - BLOCK_PAD * 2;      // header pill width
+const INDENT = 12;                      // chips nest under their header
+const HEADER_CY = TRAJ_Y + 20;          // "pending → handled" / lock row
+const ACT_Y = TRAJ_Y + 44;              // where activations land on the trajectory
+const CONTENT_TOP = TRAJ_Y + 60;        // top of the first block
+const TRAJ_GAP = 12;
+const ITER_LABEL_Y = -16, ITER_TOP = 24; // iteration label baseline / overhang
 
-let uid = 0;
-const nextId = () => `n${uid++}`;
+// Activation route: down from ACP, under the inbox, up the gutter.
+const GUTTER_X = (INBOX_X + INBOX_W + TRAJ_X) / 2;
+const LANE_Y = (INBOX_Y + INBOX_H + H) / 2;
+const ENV_W = 18; // envelope glyph width (matches the hero)
+
+const MAX_FLY_CHIPS = 2; // cap individual fly-in animations per admit batch
 
 export default {
   width: W, height: H,
   async build(ctx) {
     const root = ctx.root;
+    const guide = (d) => ctx.el('path', {
+      d, fill: 'none', stroke: COLORS.line, 'stroke-width': 1, 'stroke-dasharray': '2 4', opacity: 0.35,
+    });
 
     // ================= static scaffolding =================
     for (const key of ['user', 'subagent', 'scheduler']) {
       const a = ACTORS[key];
-      ctx.box({ x: ACTOR_X, y: a.y, w: ACTOR_W, h: a.h, title: a.label, color: colorOf(a.color) });
+      const cy = actorCY(a);
+      ctx.box({ x: ACTOR_X, y: a.y, w: ACTOR_W, h: ACTOR_H, title: a.label, color: colorOf(a.color) });
       ctx.el('text', {
-        x: ACTOR_X + ACTOR_W / 2, y: a.y + a.h / 2 + 4, class: 'mono', 'font-size': 11,
-        'text-anchor': 'middle', fill: COLORS.text, text: a.label,
+        x: ACTOR_X + ACTOR_W / 2, y: cy, class: 'mono', 'font-size': 11,
+        'text-anchor': 'middle', 'dominant-baseline': 'central', fill: COLORS.text, text: a.label,
       });
       if (a.kind === 'ExternalAgentNotification') {
-        // agent-to-agent traffic only ever reaches ACP directly.
-        ctx.arrow(ACTOR_X + ACTOR_W, a.y + a.h / 2, ACP_X, ACP_Y + ACP_H / 2, {
-          color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
-        }).setAttribute('opacity', 0.35);
+        // agent-to-agent traffic only ever reaches ACP: both guides merge
+        // on one lane into ACP's left-edge midpoint.
+        guide(`M${ACTOR_R},${cy} H${RELAY_X} V${ACP_CY}` + (key === 'subagent' ? ` H${ACP_X}` : ''));
       } else {
         // the user's messages land in the inbox directly.
-        ctx.arrow(ACTOR_X + ACTOR_W, a.y + a.h / 2, INBOX_X, INBOX_Y + 16, {
-          color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
-        }).setAttribute('opacity', 0.35);
+        guide(`M${ACTOR_R},${cy} H${INBOX_X}`);
       }
     }
 
     // ACP: the orchestration layer. Every agent-to-agent message is relayed
     // through it — append to the recipient's inbox, then send an activation.
-    ctx.box({ x: ACP_X, y: ACP_Y, w: ACP_W, h: ACP_H, title: '', color: colorOf('notify') });
-    ctx.el('text', {
-      x: ACP_X + ACP_W / 2, y: ACP_Y + ACP_H / 2 + 4, class: 'mono', 'font-size': 10.5,
-      'text-anchor': 'middle', fill: COLORS.text, text: 'ACP',
+    ctx.el('rect', {
+      x: ACP_X, y: ACP_Y, width: ACP_W, height: ACP_H, rx: ACP_H / 2,
+      fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1,
     });
-    ctx.arrow(ACP_X + ACP_W, ACP_Y + ACP_H / 2, INBOX_X, INBOX_Y + INBOX_H / 2, {
-      color: COLORS.line, dash: '2 4', width: 1, curve: 0, head: false,
-    }).setAttribute('opacity', 0.35);
-
-    const inboxBox = ctx.box({ x: INBOX_X, y: INBOX_Y, w: INBOX_W, h: INBOX_H, title: 'Inbox' });
+    // ACP "taking receipt" / "firing": its outline flashes in the signal's
+    // color. (An expanding ring would swallow the tiny pill's label.)
+    async function flashAcp(color, ms = 360) {
+      const ring = ctx.el('rect', {
+        x: ACP_X, y: ACP_Y, width: ACP_W, height: ACP_H, rx: ACP_H / 2,
+        fill: 'none', stroke: color, 'stroke-width': 2,
+      }, root);
+      try { await ctx.fade(ring, 0, ms); } finally { ring.remove(); }
+    }
     ctx.el('text', {
-      x: INBOX_X + 15, y: INBOX_Y + 24, class: 'mono', 'font-size': 10, fill: COLORS.muted,
-      text: 'pending → handled',
+      x: ACP_CX, y: ACP_CY, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono',
+      'font-size': 10, fill: COLORS.muted, 'letter-spacing': '0.08em', text: 'ACP',
+    });
+    guide(`M${ACP_X + ACP_W},${ACP_CY} H${INBOX_X}`);
+
+    ctx.box({ x: INBOX_X, y: INBOX_Y, w: INBOX_W, h: INBOX_H, title: 'Inbox' });
+    ctx.el('text', {
+      x: INBOX_X + INBOX_PAD, y: HEADER_CY, class: 'mono', 'font-size': 10, fill: COLORS.muted,
+      'dominant-baseline': 'central', text: 'pending → handled',
     });
 
-    const trajBox = ctx.box({ x: TRAJ_X, y: TRAJ_Y, w: TRAJ_W, h: TRAJ_H, title: 'Agent trajectory' });
-    // lock marker: single writer.
+    ctx.box({ x: TRAJ_X, y: TRAJ_Y, w: TRAJ_W, h: TRAJ_H, title: 'Agent trajectory' });
+    // lock marker: single writer. Icon is 16 tall (shackle top -1 … body
+    // bottom 15); its middle (7) sits on the header row's center line.
     const lockG = ctx.el('g', {});
-    ctx.setPos(lockG, TRAJ_X + 15, TRAJ_Y + 12);
-    ctx.el('rect', { x: 0, y: 6, width: 12, height: 9, rx: 2, fill: 'none', stroke: COLORS.muted, 'stroke-width': 1.3 }, lockG);
-    ctx.el('path', { d: 'M2,6 v-3 a4,4 0 0 1 8,0 v3', fill: 'none', stroke: COLORS.muted, 'stroke-width': 1.3 }, lockG);
+    ctx.setPos(lockG, TRAJ_X + BLOCK_PAD, HEADER_CY - 7);
+    ctx.el('rect', { x: 0, y: 6, width: 12, height: 9, rx: 2, fill: 'none', stroke: COLORS.muted, 'stroke-width': 1.25 }, lockG);
+    ctx.el('path', { d: 'M2.5,6 V3 a3.5,3.5 0 0 1 7,0 V6', fill: 'none', stroke: COLORS.muted, 'stroke-width': 1.25 }, lockG);
     ctx.el('text', {
-      x: 20, y: 14, class: 'mono', 'font-size': 10, fill: COLORS.muted,
-      text: 'single writer: agent',
+      x: 20, y: 7, class: 'mono', 'font-size': 10, fill: COLORS.muted,
+      'dominant-baseline': 'central', text: 'single writer: agent',
     }, lockG);
     // dashed boundary channel between the two columns.
-    ctx.arrow(INBOX_X + INBOX_W, INBOX_Y + INBOX_H / 2, TRAJ_X, TRAJ_Y + INBOX_H / 2, {
-      color: COLORS.iter, dash: '3 4', width: 1, head: false,
-    }).setAttribute('opacity', 0.3);
+    const channel = guide(`M${INBOX_X + INBOX_W},${INBOX_Y + INBOX_H / 2} H${TRAJ_X}`);
+    channel.setAttribute('stroke', COLORS.iter);
+    channel.setAttribute('stroke-dasharray', '3 4');
+    channel.setAttribute('opacity', 0.3);
 
     // ================= state =================
     // agentActive: true between AgentStart and AgentDone. Drives whether an
     // activation actually starts a run or is just acknowledged and dropped.
     const state = { inbox: [], traj: [], agentActive: false };
     // Serializes every inbox mutation (sends + admits) so simultaneous
-    // button clicks can't race each other's reflow animations.
-    let inboxLock = Promise.resolve();
-    function withInboxLock(fn) {
-      const p = inboxLock.then(fn, fn);
-      inboxLock = p.then(() => {}, () => {});
-      return p;
+    // button clicks can't race each other's reflow animations; the
+    // trajectory gets its own lock for trims/reflows.
+    const makeLock = () => {
+      let tail = Promise.resolve();
+      const run = (fn) => {
+        const p = tail.then(fn, fn);
+        tail = p.then(() => {}, () => {});
+        return p;
+      };
+      run.idle = () => tail;
+      return run;
+    };
+    const withInboxLock = makeLock();
+    const withTrajLock = makeLock();
+
+    // Move a node along an orthogonal polyline (its origin rides the line).
+    async function travel(node, pts, ms) {
+      const path = ctx.el('path', {
+        d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'), fill: 'none', stroke: 'none',
+      }, root);
+      ctx.setPos(node, pts[0][0], pts[0][1]);
+      try { await ctx.along(node, path, ms); } finally { path.remove(); }
+    }
+
+    // Same envelope glyph as the hero, centered on its origin.
+    function envelope(accent) {
+      const g = ctx.el('g', {}, root);
+      ctx.el('rect', { x: -ENV_W / 2, y: -6, width: ENV_W, height: 12, rx: 2, fill: COLORS.panel, stroke: accent, 'stroke-width': 1.4 }, g);
+      ctx.el('path', { d: `M${-ENV_W / 2},-6 L0,1 L${ENV_W / 2},-6`, fill: 'none', stroke: accent, 'stroke-width': 1.4 }, g);
+      return g;
     }
 
     // Draws either a plain event pill, or — for ExternalAgentNotification —
@@ -137,54 +193,55 @@ export default {
     // inbox append. If the agent is idle this is what actually starts a new
     // run; if it's already running, the activation is just acknowledged and
     // dropped — the running agent will pick the message up at its next
-    // iteration boundary regardless.
+    // iteration boundary regardless. Like the hero: it leaves from ACP's
+    // bottom edge and is drawn as a yellow orthogonal bolt — down, under the
+    // inbox, up the gutter, into the trajectory's left edge just below the
+    // lock row, so it never crosses a card or label.
     async function activateAgent() {
-      const from = { x: ACP_X + ACP_W / 2, y: ACP_Y + ACP_H / 2 };
-      // Land below the "single writer" lock marker so the ack label never
-      // overlaps it.
-      const to = { x: TRAJ_X - 6, y: TRAJ_Y + 46 };
-      const arcY = Math.min(from.y, INBOX_Y) - 26;
-      const path = ctx.el('path', {
-        d: `M${from.x},${from.y} Q${(from.x + to.x) / 2},${arcY} ${to.x},${to.y}`,
-        fill: 'none', stroke: 'none',
+      const sx = ACP_CX, sy = ACP_Y + ACP_H;
+      await flashAcp(COLORS.activation, 380);
+      const bolt = ctx.el('path', {
+        d: `M${sx},${sy} V${LANE_Y} H${GUTTER_X} V${ACT_Y} H${TRAJ_X}`,
+        fill: 'none', stroke: COLORS.activation, 'stroke-width': 2, opacity: 0.9,
       }, root);
-      const dot = ctx.el('circle', { r: 4, fill: COLORS.activation }, root);
-      await ctx.along(dot, path, 420);
-      path.remove();
-      if (state.agentActive) {
-        const ack = ctx.el('text', {
-          x: to.x + 8, y: to.y + 4, class: 'mono', 'font-size': 9, fill: COLORS.muted,
-          text: 'already running · ack',
-        }, root);
-        await ctx.pulse(to.x, to.y, COLORS.activation, 14, 320);
-        await ctx.wait(260);
-        await ctx.fade(ack, 0, 300);
-        ack.remove();
-      } else {
-        await ctx.pulse(to.x, to.y, COLORS.activation, 20, 420);
+      try {
+        await ctx.draw(bolt, 560);
+        if (state.agentActive) {
+          const ack = ctx.el('text', {
+            x: TRAJ_X + 24, y: ACT_Y, class: 'mono', 'font-size': 9.5, fill: COLORS.muted,
+            'dominant-baseline': 'central', text: 'already running · ack',
+          }, root);
+          await Promise.all([ctx.pulse(TRAJ_X, ACT_Y, COLORS.activation, 14, 320), ctx.fade(bolt, 0, 240)]);
+          await ctx.wait(260);
+          await ctx.fade(ack, 0, 300);
+          ack.remove();
+        } else {
+          await Promise.all([ctx.pulse(TRAJ_X, ACT_Y, COLORS.activation, 16, 420), ctx.fade(bolt, 0, 300)]);
+        }
+      } finally {
+        bolt.remove();
       }
-      dot.remove();
     }
 
     // ---------- inbox helpers ----------
+    const INBOX_LIMIT = INBOX_Y + INBOX_H - INBOX_PAD;
     function inboxSlotY(i) { return INBOX_ROW_TOP + i * (CARD_H + CARD_GAP); }
 
-    async function reflowInbox() {
-      const bottomLimit = INBOX_Y + INBOX_H - 12;
-      // trim from the front (prefer already-handled cards) if we'd overflow.
-      while (state.inbox.length && inboxSlotY(state.inbox.length - 1) + CARD_H > bottomLimit) {
+    // Drop cards from the front (prefer already-handled ones) until one more
+    // card fits, then slide the rest into their slots.
+    async function makeInboxRoom() {
+      while (state.inbox.length && inboxSlotY(state.inbox.length) + CARD_H > INBOX_LIMIT) {
         let idx = state.inbox.findIndex((c) => c.handled);
         if (idx === -1) idx = 0;
         const [removed] = state.inbox.splice(idx, 1);
         await ctx.fade(removed.node, 0, 220);
         removed.node.remove();
       }
-      await Promise.all(state.inbox.map((c, i) => ctx.move(c.node, INBOX_X + 15, inboxSlotY(i), 420)));
+      await Promise.all(state.inbox.map((c, i) => ctx.move(c.node, INBOX_X + INBOX_PAD, inboxSlotY(i), 420)));
     }
 
     function markHandled(card) {
       card.handled = true;
-      const rect = card.node.querySelector('rect:nth-of-type(2)') || card.node.querySelector('rect');
       card.node.querySelectorAll('rect').forEach((r) => r.setAttribute('stroke-opacity', 0.25));
       card.node.setAttribute('opacity', 0.5);
       card.statusEl.textContent = '✓ handled';
@@ -193,44 +250,55 @@ export default {
 
     // Send a message from an actor into the inbox (pending). Safe to call
     // from a spawned button handler or inline from the scripted sequence.
-    function sendMessage(actorKey, labelOverride) {
-      return withInboxLock(async () => {
-        const a = ACTORS[actorKey];
-        const startX = ACTOR_X + ACTOR_W + 6;
-        const startY = a.y + a.h / 2 - CARD_H / 2;
-        let card;
-        if (a.kind === 'ExternalAgentNotification') {
-          // Agents don't write to each other's inboxes directly: the message
-          // is relayed through ACP in two hops. The gap between the actor
-          // column and the inbox is too narrow for a full-size card, so it
-          // travels as a small token: actor → ACP (a brief pause while ACP
-          // takes receipt), then ACP → inbox, where it becomes the real card.
-          const token = ctx.el('circle', { r: 5, fill: colorOf(a.color) }, root);
-          ctx.setPos(token, startX, a.y + a.h / 2);
-          const acpX = ACP_X + ACP_W / 2, acpY = ACP_Y + ACP_H / 2;
-          await ctx.move(token, acpX, acpY, 260);
-          await ctx.pulse(acpX, acpY, colorOf(a.color), 14, 320);
-          await ctx.wait(300);
-          await ctx.move(token, INBOX_X + 15 + CARD_W / 2, INBOX_ROW_TOP + CARD_H / 2, 200);
-          token.remove();
-          card = renderEventCard({
-            x: INBOX_X + 15, y: INBOX_ROW_TOP, w: CARD_W, h: CARD_H, kind: a.kind, tag: a.tag, label: labelOverride,
-          });
-        } else {
-          card = renderEventCard({
-            x: startX, y: startY, w: CARD_W, h: CARD_H, kind: a.kind, tag: a.tag, label: labelOverride,
-          });
+    // Only the append itself holds the inbox lock, so several envelopes can
+    // be in flight at once (like the hero) without queueing behind each other.
+    async function sendMessage(actorKey, labelOverride) {
+      const a = ACTORS[actorKey];
+      const color = colorOf(a.color);
+      const cy = actorCY(a);
+      // The message travels as an envelope along its guide and becomes a
+      // card once it reaches the inbox edge.
+      {
+        const env = envelope(color);
+        try {
+          if (a.kind === 'ExternalAgentNotification') {
+            // Agents don't write to each other's inboxes directly: the
+            // message is relayed through ACP in two hops. Hop 1 ends with
+            // the envelope touching ACP's left edge; ACP takes receipt.
+            await travel(env, [[ACTOR_R, cy], [RELAY_X, cy], [RELAY_X, ACP_CY], [ACP_X - ENV_W / 2, ACP_CY]], 460);
+            await Promise.all([ctx.fade(env, 0, 160), flashAcp(color, 320)]);
+            await ctx.wait(200);
+            // Hop 2: ACP sends it on, out of its right edge, to the inbox.
+            ctx.setPos(env, ACP_X + ACP_W, ACP_CY);
+            await Promise.all([
+              travel(env, [[ACP_X + ACP_W, ACP_CY], [INBOX_X, ACP_CY]], 260),
+              ctx.fade(env, 1, 120),
+            ]);
+          } else {
+            await travel(env, [[ACTOR_R, cy], [INBOX_X, cy]], 420);
+          }
+          await ctx.fade(env, 0, 140);
+        } finally {
+          env.remove();
         }
+      }
+      return withInboxLock(async () => {
+        await makeInboxRoom();
+        const card = renderEventCard({
+          x: INBOX_X + INBOX_PAD, y: inboxSlotY(state.inbox.length), w: CARD_W, h: CARD_H,
+          kind: a.kind, tag: a.tag, label: labelOverride,
+        });
+        card.setAttribute('opacity', 0);
         // On the 2-line notify cards the payload sub-label sits below
         // center — level the status tag with it so the two never collide.
         const statusY = a.kind === 'ExternalAgentNotification' ? CARD_H / 2 + 9 : CARD_H / 2 + 4;
         const statusEl = ctx.el('text', {
           x: CARD_W - 8, y: statusY, class: 'mono', 'font-size': 9.5,
-          'text-anchor': 'end', fill: colorOf(a.color), text: '● pending',
+          'text-anchor': 'end', fill: color, text: '● pending',
         }, card);
         const entry = { node: card, statusEl, handled: false, kind: a.kind, tag: a.tag };
         state.inbox.push(entry);
-        await reflowInbox();
+        await ctx.fade(card, 1, 240);
         // The append is the durable step; ACP also sends an activation. If
         // the agent is already running it's just acknowledged and dropped —
         // the idle-wake case is driven explicitly by the sandbox loop below.
@@ -245,29 +313,29 @@ export default {
       return withInboxLock(async () => {
         const pending = state.inbox.filter((c) => !c.handled);
         if (!pending.length) return 0;
+        await withTrajLock.idle(); // don't aim at a block that's mid-reflow
         const flyCount = Math.min(pending.length, MAX_FLY_CHIPS);
         for (let i = 0; i < flyCount; i++) {
           const card = pending[i];
           const from = ctx.getPos(card.node);
-          const x1 = from.x + CARD_W, y1 = from.y + CARD_H / 2;
           // Notify events get a full-width single-line chip (room to read
           // "ExternalAgentNotification · <payload>" at normal size); other
           // kinds stay compact.
           const wide = card.kind === 'ExternalAgentNotification';
-          const cw = wide ? TRAJ_W - BLOCK_PAD * 2 - 20 : 160;
+          const cw = wide ? CW - INDENT : 160;
           const ch = wide ? 24 : 20;
-          const to = block.nextChipPos(); // reserved top-left slot, claimed below
-          // Drop to the slot's height while still left of (outside) the
-          // trajectory box, then move straight in from the left edge — so
-          // the flight only ever crosses the empty target row, never the
-          // rows already sitting above it.
+          const to = block.nextChipPos();
+          // The copy lifts off its source card (left-aligned, vertically
+          // centered on it), levels out to the slot's height before the
+          // trajectory edge, and lands exactly on the reserved slot.
+          const x0 = from.x, y0 = from.y + (CARD_H - ch) / 2;
           const path = ctx.el('path', {
-            d: `M${x1},${y1} C${x1 + 40},${y1} ${TRAJ_X - 16},${to.y + ch / 2} ${to.x},${to.y}`,
+            d: `M${x0},${y0} C${x0 + 80},${y0} ${TRAJ_X - 80},${to.y} ${to.x},${to.y}`,
             fill: 'none', stroke: 'none',
           }, root);
-          const clone = renderEventCard({ x: x1, y: y1, w: cw, h: ch, kind: card.kind, tag: card.tag });
-          clone.setAttribute('opacity', 0.9);
-          await ctx.along(clone, path, 560);
+          const clone = renderEventCard({ x: x0, y: y0, w: cw, h: ch, kind: card.kind, tag: card.tag });
+          clone.setAttribute('opacity', 0);
+          await Promise.all([ctx.along(clone, path, 620), ctx.fade(clone, 0.9, 160)]);
           path.remove();
           markHandled(card);
           block.absorbChip(clone);
@@ -279,70 +347,81 @@ export default {
           for (let i = flyCount; i < pending.length; i++) markHandled(pending[i]);
           block.addWork(`+${rest} more admitted`, 'content');
         }
-        await reflowInbox();
         await trimTraj();
         return pending.length;
       });
     }
 
     // ---------- trajectory helpers ----------
-    function recomputeTop() {
-      let y = TRAJ_ROW_TOP;
-      for (const b of state.traj) y += b.height + 12;
-      return y;
+    // Blocks stack from CONTENT_TOP with TRAJ_GAP between one block's
+    // bottom and the next block's top (iteration labels overhang upward).
+    function trajLayout() {
+      let y = CONTENT_TOP;
+      const ys = [];
+      for (const b of state.traj) {
+        y += b.top;
+        ys.push(y);
+        y += b.bottom + TRAJ_GAP;
+      }
+      return { ys, next: y };
     }
 
     async function reflowTraj() {
-      let y = TRAJ_ROW_TOP;
-      const moves = [];
-      for (const b of state.traj) {
-        moves.push(ctx.move(b.g, TRAJ_X + BLOCK_PAD, y, 400));
-        y += b.height + 12;
-      }
-      await Promise.all(moves);
+      const { ys } = trajLayout();
+      await Promise.all(state.traj.map((b, i) => ctx.move(b.g, TRAJ_X + BLOCK_PAD, ys[i], 400)));
     }
 
-    async function trimTraj() {
-      const bottomLimit = TRAJ_Y + TRAJ_H - 10;
-      while (state.traj.length > 1 && recomputeTop() > bottomLimit) {
-        const old = state.traj.shift();
-        await ctx.fade(old.g, 0, 220);
-        old.g.remove();
-        await reflowTraj();
-      }
+    // Drop the oldest blocks until everything fits in the trajectory box —
+    // or, with `reserve`, until a new block of that height fits below.
+    function trimTraj(reserve = 0) {
+      return withTrajLock(async () => {
+        const limit = TRAJ_Y + TRAJ_H - 8;
+        const overflows = () => {
+          const n = state.traj.length;
+          const { ys, next } = trajLayout();
+          if (reserve) return n > 0 && next + reserve > limit;
+          return n > 1 && ys[n - 1] + state.traj[n - 1].bottom > limit;
+        };
+        while (overflows()) {
+          const old = state.traj.shift();
+          await ctx.fade(old.g, 0, 220);
+          old.g.remove();
+          await reflowTraj();
+        }
+      });
     }
 
     // Shared block shape: a header (agent pill, or iteration header) plus
     // room to grow as work chips / admitted copies are appended below it.
-    function makeBlock(g, startContentY, bg) {
+    function makeBlock(g, { top, startContentY, bg }) {
+      const grow = (dy) => {
+        block.contentY += dy;
+        if (bg) bg.setAttribute('height', block.contentY + 10);
+      };
       const block = {
-        g, bg, contentY: startContentY,
+        g, bg, top, contentY: startContentY,
+        // bottom edge relative to the block origin: the frame for
+        // iterations, the last chip for agent pills.
+        get bottom() { return bg ? this.contentY + 2 : this.contentY - 6; },
         nextChipPos() {
-          // absolute page position of the next chip's top-left resting
-          // spot — reserved the moment it's asked for, since the caller
-          // claims it (via absorbChip) before starting the next one.
+          // absolute page position of the next chip's top-left resting spot.
           const p = ctx.getPos(g);
-          return { x: p.x + 8, y: p.y + this.contentY };
+          return { x: p.x + INDENT, y: p.y + this.contentY };
         },
         absorbChip(clone) {
-          // clone currently lives in root at absolute coords, already at
-          // its final resting (top-left) position; reparent into this
-          // block, keeping that same on-screen position.
-          const abs = ctx.getPos(clone);
-          const origin = ctx.getPos(g);
+          // reparent the landed clone into this block, at its slot.
           g.appendChild(clone);
-          ctx.setPos(clone, abs.x - origin.x, abs.y - origin.y);
-          this.contentY += (clone._h || 20) + 6;
-          if (this.bg) this.bg.setAttribute('height', this.contentY + 8);
+          ctx.setPos(clone, INDENT, this.contentY);
+          grow((clone._h || 20) + 6);
         },
         addWork(label, type) {
-          const chip = ctx.eventPill({ x: 8, y: this.contentY, name: type, label, w: TRAJ_W - BLOCK_PAD * 2 - 40, h: 18 }, g);
+          const chip = ctx.eventPill({ x: INDENT, y: this.contentY, name: type, label, w: CW - INDENT, h: 18 }, g);
           chip.setAttribute('opacity', 0.85);
-          this.contentY += 24;
-          if (this.bg) this.bg.setAttribute('height', this.contentY + 8);
+          grow(24);
+          ctx.spawn(() => trimTraj());
           return chip;
         },
-        get height() { return this.contentY + 14; },
+        grow,
       };
       return block;
     }
@@ -351,46 +430,43 @@ export default {
     // messages admitted right at run start.
     async function appendAgentPill(name) {
       state.agentActive = name === 'AgentStart';
-      const y = recomputeTop();
+      await trimTraj(name === 'AgentStart' ? 58 : 26);
       const g = ctx.el('g', {});
-      ctx.setPos(g, TRAJ_X + BLOCK_PAD, y);
-      const pill = ctx.eventPill({ x: 0, y: 0, name, w: TRAJ_W - BLOCK_PAD * 2, h: 26 }, g);
+      ctx.setPos(g, TRAJ_X + BLOCK_PAD, trajLayout().next);
+      const pill = ctx.eventPill({ x: 0, y: 0, name, w: CW, h: 26 }, g);
       pill.setAttribute('opacity', 0);
-      const block = makeBlock(g, 34, null);
+      const block = makeBlock(g, { top: 0, startContentY: 32, bg: null });
       state.traj.push(block);
       await ctx.fade(pill, 1, 300);
-      await trimTraj();
       return block;
     }
 
-    // An iteration block: header, then chips appended as they happen.
-    function beginIterationBlock(n) {
-      const y = recomputeTop();
+    // An iteration block: header, then chips appended as they happen,
+    // inside a frame with 8 units of padding on every side.
+    async function beginIterationBlock(n) {
+      await trimTraj(ITER_TOP + 112);
       const g = ctx.el('g', {});
-      ctx.setPos(g, TRAJ_X + BLOCK_PAD, y);
+      ctx.setPos(g, TRAJ_X + BLOCK_PAD, trajLayout().next + ITER_TOP);
       const bg = ctx.el('rect', {
-        x: -6, y: -6, width: TRAJ_W - BLOCK_PAD * 2 + 12, height: 34, rx: 8,
+        x: -8, y: -8, width: CW + 16, height: 40, rx: 8,
         fill: 'none', stroke: COLORS.dim, 'stroke-width': 1,
       }, g);
       ctx.el('text', {
-        x: 0, y: -12, class: 'mono', 'font-size': 9.5, fill: COLORS.muted,
-        text: `ITERATION ${n}`,
+        x: 0, y: ITER_LABEL_Y, class: 'mono', 'font-size': 10, fill: COLORS.muted,
+        'letter-spacing': '0.06em', text: `ITERATION ${n}`,
       }, g);
-      ctx.eventPill({ x: 0, y: 0, name: 'IterationStart', w: TRAJ_W - BLOCK_PAD * 2 - 20, h: 24 }, g);
-      const block = makeBlock(g, 34, bg);
+      ctx.eventPill({ x: 0, y: 0, name: 'IterationStart', w: CW, h: 24 }, g);
+      const block = makeBlock(g, { top: ITER_TOP, startContentY: 30, bg });
       state.traj.push(block);
       return block;
     }
 
     async function endIterationBlock(block) {
-      const g = block.g;
-      const gate = ctx.el('g', {}, g);
-      ctx.setPos(gate, 0, block.contentY);
-      ctx.eventPill({ x: 0, y: 0, name: 'IterationEnd', w: TRAJ_W - BLOCK_PAD * 2 - 20, h: 24 }, gate);
-      block.contentY += 30;
-      block.bg.setAttribute('height', block.contentY + 8);
-      const origin = ctx.getPos(g);
-      await ctx.pulse(origin.x + (TRAJ_W - BLOCK_PAD * 2) / 2, origin.y + block.contentY - 12, COLORS.iter, 20, 550);
+      const gateY = block.contentY;
+      ctx.eventPill({ x: 0, y: gateY, name: 'IterationEnd', w: CW, h: 24 }, block.g);
+      block.grow(30);
+      const origin = ctx.getPos(block.g);
+      await ctx.pulse(origin.x + CW / 2, origin.y + gateY + 12, COLORS.iter, 20, 550);
       await trimTraj();
     }
 
@@ -414,7 +490,7 @@ export default {
     await admitPending(run);
 
     iterN += 1;
-    let block = beginIterationBlock(iterN);
+    let block = await beginIterationBlock(iterN);
     await ctx.beat('The agent begins iterating on what it just admitted.');
     block.addWork('thinking…', 'thinking');
     await ctx.wait(500);
@@ -433,7 +509,7 @@ export default {
     await ctx.beat('Picked up as an interjection — not after the whole response finished.');
 
     iterN += 1;
-    block = beginIterationBlock(iterN);
+    block = await beginIterationBlock(iterN);
     await ctx.beat('While this next iteration runs, more messages arrive at once: a follow-up and a scheduled wake-up.');
     block.addWork('thinking…', 'thinking');
     await sendMessage('user', 'UserMessage');
@@ -468,7 +544,7 @@ export default {
       }
 
       iterN += 1;
-      block = beginIterationBlock(iterN);
+      block = await beginIterationBlock(iterN);
       ctx.caption(`Iteration ${iterN}: thinking, maybe a tool call…`);
       block.addWork('thinking…', 'thinking');
       await ctx.wait(900);

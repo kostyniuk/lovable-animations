@@ -16,15 +16,25 @@ import { COLORS, colorOf } from '../lib.js';
 
 const W = 900, H = 420;
 
-const SUB = { x: 24, y: 40, w: 214, h: 140 };
-const ACP = { x: 350, y: 40, w: 200, h: 210 };
-const PAR = { x: 686, y: 40, w: 200, h: 150 };
+const PAD = 14; // inner padding of every card
 
-const CHAN_Y = 103; // height of the envelope channel through the middle of the cards
+// ACP API rows: 24 tall, 8 apart, first row below the panel header.
+const ROW_Y0 = 38, ROW_H = 24, ROW_GAP = 8;
+
+const SUB = { x: 24, y: 40, w: 208, h: 132 };
+const ACP = { x: 350, y: 40, w: 200, h: ROW_Y0 + 5 * (ROW_H + ROW_GAP) - ROW_GAP + 12 };
+const PAR = { x: W - 24 - 208, y: 40, w: 208, h: 158 }; // mirrors SUB: 24 from the edge
+
+// The envelope channel runs through the subagent card's vertical middle, the
+// gap between ACP's first two API rows, and the middle of the inbox tray.
+const CHAN_Y = SUB.y + SUB.h / 2;
+const TRAY_H = 30;
 const BUS_Y = 300;  // horizontal "activation bus" above the fleet row
+const BUS_DASH = { 'stroke-dasharray': '3 3', 'stroke-dashoffset': 1.5 };
 
 const NODE_W = 140, NODE_H = 50, NODE_Y = 340;
 const NODE_XS = [180, 360, 540, 720]; // centers
+const NODE_SUB_DY = 8; // two-line node: label sits this far above center, sub-label this far below
 
 const CALLS = ['SpawnAgent', 'ForkAndSendMessage', 'SendMessage', 'NotifyParents', 'StopAgent'];
 
@@ -82,10 +92,10 @@ function buildScaffold(ctx) {
   // ---------- subagent card ----------
   ctx.box({ ...SUB, title: 'Subagent · explore', color: COLORS.agent });
   el('text', {
-    x: SUB.x + 14, y: SUB.y + 20, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+    x: SUB.x + PAD, y: SUB.y + 20, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
     'letter-spacing': '0.06em', text: 'TRAJECTORY',
   });
-  const subRow = makeRow(ctx, SUB.x + 14, SUB.y + 30, SUB.w - 28);
+  const subRow = makeRow(ctx, SUB.x + PAD, SUB.y + 30, SUB.w - 2 * PAD);
   renderRow(ctx, subRow, [
     { text: 'IterationStart', color: colorOf('iter') },
     { text: 'tool_call', color: colorOf('tool') },
@@ -101,14 +111,15 @@ function buildScaffold(ctx) {
   });
   const acpRows = {};
   CALLS.forEach((name, i) => {
-    const y = ACP.y + 38 + i * 32;
+    const y = ACP.y + ROW_Y0 + i * (ROW_H + ROW_GAP);
     const g = el('g', {});
     const rect = el('rect', {
-      x: ACP.x + 12, y, width: ACP.w - 24, height: 24, rx: 5,
+      x: ACP.x + 12, y, width: ACP.w - 24, height: ROW_H, rx: 5,
       fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1.1, 'stroke-opacity': 0.6,
     }, g);
     const text = el('text', {
-      x: ACP.x + 22, y: y + 16, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: name,
+      x: ACP.x + 22, y: y + ROW_H / 2, 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: name,
     }, g);
     acpRows[name] = { rect, text };
   });
@@ -116,21 +127,21 @@ function buildScaffold(ctx) {
   // ---------- parent card ----------
   ctx.box({ ...PAR, title: 'Parent · builder', color: COLORS.iter });
   const statusBadge = el('text', {
-    x: PAR.x + 14, y: PAR.y + 22, class: 'mono', 'font-size': 11, fill: COLORS.muted,
+    x: PAR.x + PAD, y: PAR.y + 22, class: 'mono', 'font-size': 11, fill: COLORS.muted,
     text: '💤 asleep',
   });
 
   el('text', {
-    x: PAR.x + 14, y: PAR.y + 44, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+    x: PAR.x + PAD, y: PAR.y + 44, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
     'letter-spacing': '0.06em', text: 'INBOX',
   });
-  const tray = makeTray(ctx, PAR.x + 4, PAR.y + 48, PAR.w - 8, 30);
+  const tray = makeTray(ctx, PAR.x + PAD - 4, CHAN_Y - TRAY_H / 2, PAR.w - 2 * (PAD - 4), TRAY_H);
 
   el('text', {
-    x: PAR.x + 14, y: PAR.y + 92, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+    x: tray.x + 4, y: tray.y + tray.h + 14, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
     'letter-spacing': '0.06em', text: 'TRAJECTORY',
   });
-  const parRow = makeRow(ctx, PAR.x + 14, PAR.y + 100, PAR.w - 28);
+  const parRow = makeRow(ctx, PAR.x + PAD, tray.y + tray.h + 22, PAR.w - 2 * PAD);
   renderRow(ctx, parRow, [
     { text: '…', color: COLORS.muted, plain: true },
     { text: 'IterationEnd', color: colorOf('iter') },
@@ -141,26 +152,37 @@ function buildScaffold(ctx) {
   ctx.arrow(ACP.x + ACP.w, CHAN_Y, tray.x, CHAN_Y, { color: COLORS.line, dash: '3 4', width: 1, head: false }).setAttribute('opacity', 0.35);
 
   // ---------- activation bus ----------
-  ctx.arrow(ACP.x + ACP.w / 2, ACP.y + ACP.h, ACP.x + ACP.w / 2, BUS_Y, { color: COLORS.activation, dash: '3 4', width: 1, head: false }).setAttribute('opacity', 0.3);
-  ctx.arrow(NODE_XS[0], BUS_Y, NODE_XS[NODE_XS.length - 1], BUS_Y, { color: COLORS.activation, dash: '3 4', width: 1, head: false }).setAttribute('opacity', 0.3);
+  // Every dashed segment starts at a junction with the same dash phase, so
+  // each drop point and the ACP stem meet the bus on a dash, never a gap.
+  const busLine = (x1, y1, x2, y2) => {
+    const l = ctx.arrow(x1, y1, x2, y2, { color: COLORS.activation, width: 1, head: false });
+    for (const [k, v] of Object.entries(BUS_DASH)) l.setAttribute(k, v);
+    l.setAttribute('opacity', 0.3);
+  };
+  const stemX = ACP.x + ACP.w / 2;
+  busLine(stemX, BUS_Y, stemX, ACP.y + ACP.h);
+  const joints = [...NODE_XS, stemX].sort((a, b) => a - b);
+  for (let i = 0; i < joints.length - 1; i++) {
+    if (joints[i + 1] > joints[i]) busLine(joints[i], BUS_Y, joints[i + 1], BUS_Y);
+  }
 
   // ---------- fleet ----------
   const nodes = NODE_XS.map((x, i) => {
-    ctx.arrow(x, BUS_Y, x, NODE_Y, { color: COLORS.activation, dash: '3 4', width: 1, head: false }).setAttribute('opacity', 0.3);
+    busLine(x, BUS_Y, x, NODE_Y);
     const g = ctx.box({ x: x - NODE_W / 2, y: NODE_Y, w: NODE_W, h: NODE_H, color: COLORS.line, title: null });
     const name = `node-${i + 1}`;
     const label = el('text', {
-      x: NODE_W / 2, y: NODE_H / 2 + 4, 'text-anchor': 'middle', class: 'mono',
-      'font-size': 10.5, fill: COLORS.muted, text: name,
+      x: NODE_W / 2, y: NODE_H / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: name,
     }, g);
     const subLabel = el('text', {
-      x: NODE_W / 2, y: NODE_H / 2 + 17, 'text-anchor': 'middle', class: 'mono',
-      'font-size': 8.5, fill: COLORS.muted, text: 'running parent', opacity: 0,
+      x: NODE_W / 2, y: NODE_H / 2 + NODE_SUB_DY, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 9.5, fill: COLORS.muted, text: 'running parent', opacity: 0,
     }, g);
     return { x, box: g, rect: g._rect, label, subLabel, name };
   });
   el('text', {
-    x: 24, y: NODE_Y - 12, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+    x: SUB.x + 12, y: NODE_Y - 8, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
     'letter-spacing': '0.06em', text: 'FLEET',
   });
 
@@ -391,10 +413,12 @@ async function admitNotification(ctx, world, { boot }) {
 
   renderRow(ctx, row, finalItems);
 
-  ctx.el('text', {
-    x: card.w - 4, y: -5, 'text-anchor': 'end', class: 'mono', 'font-size': 9,
+  // Right-aligned on the INBOX header line, clear of the tray border.
+  const handled = ctx.el('text', {
+    x: card.x + card.w, y: PAR.y + 44, 'text-anchor': 'end', class: 'mono', 'font-size': 10,
     fill: COLORS.muted, text: 'handled',
-  }, card.g);
+  });
+  world.transient.push(handled);
   await ctx.fade(card.g, 0.4, 300);
 }
 
@@ -430,7 +454,7 @@ async function bootNode(ctx, world, node) {
   node.rect.setAttribute('stroke', COLORS.activation);
   node.rect.setAttribute('stroke-width', 2);
   node.label.setAttribute('fill', COLORS.activation);
-  node.label.setAttribute('y', NODE_H / 2 - 3);
+  node.label.setAttribute('y', NODE_H / 2 - NODE_SUB_DY);
   node.subLabel.setAttribute('fill', COLORS.activation);
   node.subLabel.setAttribute('opacity', 1);
   await ctx.pulse(node.x, NODE_Y + NODE_H / 2, COLORS.activation, 22, 500);
@@ -445,27 +469,28 @@ async function bootNode(ctx, world, node) {
 async function rejectClaim(ctx, world, node) {
   node.rect.setAttribute('stroke', COLORS.revert);
   node.label.setAttribute('fill', COLORS.revert);
-  const bubble = ctx.el('text', {
-    x: node.x, y: NODE_Y - 10, 'text-anchor': 'middle', class: 'mono',
-    'font-size': 10.5, fill: COLORS.revert, text: 'already claimed',
-  });
-  world.transient.push(bubble);
+  // The verdict is shown inside the node (as its sub-label) so it never sits
+  // on the node's dashed drop line from the bus.
+  const bubble = node.subLabel;
+  node.label.setAttribute('y', NODE_H / 2 - NODE_SUB_DY);
+  bubble.textContent = 'already claimed';
+  bubble.setAttribute('fill', COLORS.revert);
   bubble.setAttribute('opacity', 0);
   await ctx.fade(bubble, 1, 200);
   await ctx.wait(500);
   bubble.textContent = 'ack & drop';
   await ctx.wait(500);
   await ctx.fade(bubble, 0, 250);
-  bubble.remove();
-  world.transient = world.transient.filter((t) => t !== bubble);
+  node.label.setAttribute('y', NODE_H / 2);
 }
 
 function idleNode(node) {
   node.rect.setAttribute('stroke', COLORS.line);
   node.rect.setAttribute('stroke-width', 1.25);
   node.label.setAttribute('fill', COLORS.muted);
-  node.label.setAttribute('y', NODE_H / 2 + 4);
+  node.label.setAttribute('y', NODE_H / 2);
   node.label.textContent = node.name;
+  node.subLabel.textContent = 'running parent';
   node.subLabel.setAttribute('fill', COLORS.muted);
   node.subLabel.setAttribute('opacity', 0);
 }
@@ -507,13 +532,15 @@ function landTrayCard(ctx, world) {
   const tray = world.par.tray;
   const w = tray.w - 8, h = tray.h - 10;
   const x = tray.x + 4, y = tray.y + 5;
+  const STAMP = 14;
   const g = ctx.el('g', {});
   ctx.setPos(g, x, y);
   ctx.el('rect', { width: w, height: h, rx: 4, fill: COLORS.panel, stroke: colorOf('notify'), 'stroke-width': 1.25 }, g);
   ctx.el('rect', { width: 3, height: h, rx: 1.5, fill: colorOf('notify') }, g);
-  ctx.el('text', { x: 9, y: h / 2 + 3.5, class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: 'Notif · Completed' }, g);
+  ctx.el('text', { x: 9, y: h / 2, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text: 'Notif · Completed' }, g);
 
-  const stampX = x + w - 8, stampY = y + h / 2 - 7;
+  // Stamp sits inside the card's right end, vertically centered.
+  const stampX = x + w - (h - STAMP) / 2 - STAMP, stampY = y + (h - STAMP) / 2;
   const stamp = ctx.el('g', {});
   ctx.setPos(stamp, stampX, stampY);
   ctx.el('circle', { cx: 7, cy: 7, r: 7, fill: COLORS.bg, stroke: colorOf('tool'), 'stroke-width': 1.3 }, stamp);
@@ -540,7 +567,7 @@ function chip(ctx, parent, x, y, text, color, h = 18) {
   ctx.setPos(g, x, y);
   ctx.el('rect', { width: w, height: h, rx: 4, fill: COLORS.panel, stroke: color, 'stroke-width': 1, 'stroke-opacity': 0.6 }, g);
   ctx.el('rect', { width: 3, height: h, rx: 1.5, fill: color }, g);
-  ctx.el('text', { x: 9, y: h / 2 + 3.5, class: 'mono', 'font-size': 10.5, fill: COLORS.text, text }, g);
+  ctx.el('text', { x: 9, y: h / 2, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.text, text }, g);
   g._w = w; g._h = h;
   return g;
 }
@@ -588,11 +615,12 @@ function renderRow(ctx, row, items) {
   const chips = [];
   layout.positions.forEach((pos) => {
     if (pos.dot) {
-      ctx.el('text', { x: pos.x - 9, y: pos.y + pos.h / 2 + 3.5, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: '·' }, row.g);
+      // Centered in the gap between the previous item and this one.
+      ctx.el('text', { x: pos.x - 9, y: pos.y + pos.h / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: '·' }, row.g);
     }
     let node;
     if (pos.item.plain) {
-      node = ctx.el('text', { x: pos.x, y: pos.y + pos.h / 2 + 3.5, class: 'mono', 'font-size': 10.5, fill: pos.item.color || COLORS.muted, text: pos.item.text }, row.g);
+      node = ctx.el('text', { x: pos.x, y: pos.y + pos.h / 2, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: pos.item.color || COLORS.muted, text: pos.item.text }, row.g);
       node._x = pos.x; node._y = pos.y; node._w = pos.w; node._h = pos.h;
     } else {
       node = chip(ctx, row.g, pos.x, pos.y, pos.item.text, pos.item.color, pos.h);

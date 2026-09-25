@@ -6,6 +6,8 @@
 // at a glance rather than a wireframe.
 
 const GLOW_ID = 'hero-glow';
+const ACP_H = 18; // control-plane bar height
+const ENV_W = 18, ENV_H = 12; // envelope glyph size
 
 const IDLE_CAPTIONS = [
   'the chat agent runs at the workspace level, on its own trajectory',
@@ -47,21 +49,22 @@ export default {
     ensureGlow(ctx);
 
     // ---------- layout ----------
-    const chat = { x: 340, y: 20, w: 220, h: 110 };
+    const chat = { x: 340, y: 36, w: 220, h: 110 };
     const projectDefs = [
-      { key: 'marketing', label: 'marketing-site', x: 60, y: 190, w: 210, h: 110 },
-      { key: 'dashboard', label: 'dashboard', x: 345, y: 190, w: 210, h: 110 },
-      { key: 'mobile', label: 'mobile-app', x: 630, y: 190, w: 210, h: 110 },
+      { key: 'marketing', label: 'marketing-site', x: 60, y: 206, w: 210, h: 110 },
+      { key: 'dashboard', label: 'dashboard', x: 345, y: 206, w: 210, h: 110 },
+      { key: 'mobile', label: 'mobile-app', x: 630, y: 206, w: 210, h: 110 },
     ];
-    const acpY = 350;
-    const fleetY = 400;
-    const fleetXs = [110, 265, 420, 575, 730];
+    const acpY = 366;
+    const fleetY = 416;
+    // centered on the 900-wide stage, like the projects and the bar
+    const fleetXs = [130, 290, 450, 610, 770];
     const nodeW = 118, nodeH = 46;
 
     // ---------- chat panel ----------
     ctx.el('text', {
       x: chat.x + chat.w / 2, y: chat.y - 10, 'text-anchor': 'middle',
-      class: 'mono', 'font-size': 11, fill: COLORS.muted, 'letter-spacing': '0.08em',
+      class: 'mono', 'font-size': 10.5, fill: COLORS.muted, 'letter-spacing': '0.06em',
       text: 'CHAT AGENT · workspace',
     });
     const chatPanel = makePanel(ctx, { x: chat.x, y: chat.y, w: chat.w, h: chat.h, accent: COLORS.agent });
@@ -83,7 +86,7 @@ export default {
     };
     setStatus(ctx, chatPanel, 'asleep');
     chatPanel.activity.textContent = 'idle · waiting for a message';
-    prefill(ctx, chatPanel.lane, () => ctx.colorOf(CHAT_SEQ[Math.floor(Math.random() * CHAT_SEQ.length)]));
+    prefill(ctx, chatPanel.lane, () => ctx.colorOf(CHAT_SEQ[Math.floor(ctx.random() * CHAT_SEQ.length)]));
 
     // ---------- project panels ----------
     const projects = projectDefs.map((p) => {
@@ -95,20 +98,27 @@ export default {
       const panel = makePanel(ctx, { x: p.x, y: p.y, w: p.w, h: p.h, accent: COLORS.iter });
       setStatus(ctx, panel, 'asleep');
       panel.activity.textContent = 'idle · waiting for a task';
-      prefill(ctx, panel.lane, () => ctx.colorOf(BUILD_SEQ[Math.floor(Math.random() * BUILD_SEQ.length)]));
+      prefill(ctx, panel.lane, () => ctx.colorOf(BUILD_SEQ[Math.floor(ctx.random() * BUILD_SEQ.length)]));
       return { ...p, panel, busy: false };
     });
 
     // ---------- ACP bar ----------
     ctx.el('rect', {
-      x: 60, y: acpY, width: 780, height: 18, rx: 9,
+      x: 60, y: acpY, width: 780, height: ACP_H, rx: ACP_H / 2,
       fill: COLORS.panel, stroke: COLORS.line, 'stroke-width': 1,
     });
-    ctx.el('text', {
-      x: 450, y: acpY + 12, 'text-anchor': 'middle', class: 'mono',
+    // Live signals (trails, activations, boot lines) draw in this layer, under
+    // an opaque plate behind the bar label, so nothing ever crosses the text.
+    const signals = ctx.el('g', {});
+    const plate = ctx.el('rect', { y: acpY + 1, height: ACP_H - 2, fill: COLORS.panel });
+    const acpText = ctx.el('text', {
+      x: 450, y: acpY + ACP_H / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono',
       'font-size': 10, fill: COLORS.muted, 'letter-spacing': '0.08em',
       text: 'AGENT CONTROL PLANE',
     });
+    const tb = acpText.getBBox();
+    plate.setAttribute('x', tb.x - 6);
+    plate.setAttribute('width', tb.width + 12);
 
     // ---------- fleet nodes ----------
     const nodes = fleetXs.map((x, i) => makeNode(ctx, x, fleetY, nodeW, nodeH, i));
@@ -118,7 +128,7 @@ export default {
       ctx.arrow(p.x + p.w / 2, p.y + p.h, p.x + p.w / 2, acpY, { color: COLORS.dim, width: 1, head: false });
     });
     fleetXs.forEach((x) => {
-      ctx.arrow(x, acpY + 18, x, fleetY, { color: COLORS.dim, width: 1, head: false });
+      ctx.arrow(x, acpY + ACP_H, x, fleetY, { color: COLORS.dim, width: 1, head: false });
     });
     // The chat agent reaches the projects only through ACP: its link runs
     // down the gutter between the first two projects into the bar.
@@ -131,7 +141,7 @@ export default {
 
     // ---------- captions ----------
     let lastSaid = 0;
-    const say = (text) => { ctx.caption(text); lastSaid = performance.now(); };
+    const say = (text) => { ctx.caption(text); lastSaid = ctx.now(); };
     say('watching the whole system idle, waiting for work to arrive');
 
     let idleIdx = 0;
@@ -139,10 +149,10 @@ export default {
       while (ctx.alive) {
         await ctx.wait(1600);
         if (!ctx.alive) return;
-        if (performance.now() - lastSaid > 2600) {
+        if (ctx.now() - lastSaid > 2600) {
           ctx.caption(IDLE_CAPTIONS[idleIdx % IDLE_CAPTIONS.length]);
           idleIdx++;
-          lastSaid = performance.now() - 2600;
+          lastSaid = ctx.now() - 2600;
         }
       }
     });
@@ -151,7 +161,7 @@ export default {
     ctx.spawn(async () => {
       let i = 0;
       while (ctx.alive) {
-        await ctx.wait(900 + Math.random() * 500);
+        await ctx.wait(900 + ctx.random() * 500);
         if (!ctx.alive) return;
         chatWake(); // the chat agent only appends events while it's running
         tick(ctx, chatPanel, CHAT_SEQ[i % CHAT_SEQ.length]);
@@ -162,15 +172,15 @@ export default {
     // frequent forks, branching off a real tick on a random builder's lane
     ctx.spawn(async () => {
       while (ctx.alive) {
-        await ctx.wait(3600 + Math.random() * 3200);
+        await ctx.wait(3600 + ctx.random() * 3200);
         if (!ctx.alive) return;
-        const p = projects[Math.floor(Math.random() * projects.length)];
+        const p = projects[Math.floor(ctx.random() * projects.length)];
         say(`a background fork branches off ${p.label}'s last iteration boundary — it inherits that history without copying it`);
-        await showFork(ctx, p);
+        await showFork(ctx, p, acpY);
       }
     });
 
-    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, gutterX, chatLinkY, say };
+    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, gutterX, chatLinkY, signals, say };
 
     ctx.button('Send a task', () => ctx.spawn(() => runFanOut(ctx, world)));
 
@@ -178,7 +188,7 @@ export default {
     // are always in flight at once.
     while (ctx.alive) {
       ctx.spawn(() => runFanOut(ctx, world));
-      await ctx.wait(1300 + Math.random() * 1100);
+      await ctx.wait(1300 + ctx.random() * 1100);
     }
   },
 };
@@ -203,16 +213,18 @@ function makePanel(ctx, { x, y, w, h, accent }) {
   });
   const box = ctx.box({ x, y, w, h, color: accent });
 
-  const statusDot = ctx.el('circle', { cx: x + 14, cy: y + 17, r: 3.5, fill: COLORS.dim });
+  // status row: dot, label and inbox tray share one centerline
+  const rowY = y + 17;
+  const statusDot = ctx.el('circle', { cx: x + 14, cy: rowY, r: 3.5, fill: COLORS.dim });
   const statusText = ctx.el('text', {
-    x: x + 22, y: y + 20, class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'asleep',
+    x: x + 22, y: rowY, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'asleep',
   });
 
-  const trayX = x + w - 30, trayY = y + 9;
+  const trayX = x + w - 30, trayY = rowY - 8;
   const tray = trayIcon(ctx, trayX, trayY, COLORS.notify);
   const countBg = ctx.el('circle', { cx: trayX + 23, cy: trayY - 3, r: 7, fill: COLORS.notify, opacity: 0 });
   const countText = ctx.el('text', {
-    x: trayX + 23, y: trayY, 'text-anchor': 'middle', class: 'mono', 'font-size': 8.5,
+    x: trayX + 23, y: trayY - 3, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 9.5,
     fill: COLORS.bg, opacity: 0, text: '',
   });
 
@@ -220,7 +232,7 @@ function makePanel(ctx, { x, y, w, h, accent }) {
     x: x + 14, y: y + 40, class: 'mono', 'font-size': 10, fill: COLORS.muted, text: '· · ·',
   });
 
-  const lane = makeLane(ctx, x + 10, y + h - 30, w - 20);
+  const lane = makeLane(ctx, x + 10, y + h - 34, w - 20); // 10 in from the sides and bottom
 
   return {
     x, y, w, h, glow, box, statusDot, statusText, tray, countBg, countText, activity, lane,
@@ -272,19 +284,22 @@ function trayIcon(ctx, x, y, color) {
 // Fills up to capacity without shifting; once full, adding a chip drops the
 // oldest (left) one and smoothly slides the rest over, so the lane always
 // reads as rich, dense history.
+let laneSeq = 0;
 function makeLane(ctx, x, y, w) {
   const chipW = 9, chipH = 16, gap = 3, pad = 8;
   const pitch = chipW + gap;
   const h = chipH + 8;
   const capacity = Math.max(4, Math.floor((w - 2 * pad + gap) / pitch));
+  // center the chip run so the left and right insets match
+  const inset = (w - (capacity * pitch - gap)) / 2;
   const g = ctx.el('g', {});
   ctx.setPos(g, x, y);
   ctx.el('rect', { x: 0, y: 0, width: w, height: h, rx: 5, fill: ctx.COLORS.bg, stroke: ctx.COLORS.dim, 'stroke-width': 1 }, g);
-  const clipId = 'clip-' + Math.random().toString(36).slice(2);
+  const clipId = 'hero-lane-clip-' + ++laneSeq;
   const defs = ctx.el('clipPath', { id: clipId }, g);
   ctx.el('rect', { x: 2, y: 2, width: w - 4, height: h - 4, rx: 4 }, defs);
   const inner = ctx.el('g', { 'clip-path': `url(#${clipId})`, transform: `translate(0, ${(h - chipH) / 2})` }, g);
-  return { g, inner, w, h, chipW, chipH, pad, pitch, capacity, ticks: [] };
+  return { g, inner, w, h, chipW, chipH, pad: inset, pitch, capacity, ticks: [] };
 }
 
 function addChip(ctx, lane, color, instant = false) {
@@ -332,15 +347,17 @@ function makeNode(ctx, x, fleetY, nodeW, nodeH, i) {
   });
   const g = ctx.box({ x: x - nodeW / 2, y: fleetY, w: nodeW, h: nodeH, color: COLORS.line });
   const name = `node-${i + 1}`;
+  // Idle: the name sits on the box's centerline. Active: it lifts to make
+  // room for the project sub-label, and the pair is centered together.
   const label = ctx.el('text', {
-    x: nodeW / 2, y: nodeH / 2 - 3, 'text-anchor': 'middle', class: 'mono',
+    x: nodeW / 2, y: nodeH / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono',
     'font-size': 10.5, fill: COLORS.muted, text: name,
   }, g);
   const sub = ctx.el('text', {
-    x: nodeW / 2, y: nodeH / 2 + 13, 'text-anchor': 'middle', class: 'mono',
-    'font-size': 9, fill: COLORS.muted, opacity: 0, text: '',
+    x: nodeW / 2, y: nodeH / 2 + 8, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono',
+    'font-size': 9.5, fill: COLORS.muted, opacity: 0, text: '',
   }, g);
-  return { x, y: fleetY, box: g, rect: g._rect, glow, label, sub, name, active: false };
+  return { x, y: fleetY, box: g, rect: g._rect, glow, label, sub, name, active: false, labelY: { idle: nodeH / 2, active: nodeH / 2 - 7 } };
 }
 
 function setNodeActive(ctx, node, project) {
@@ -349,25 +366,31 @@ function setNodeActive(ctx, node, project) {
   // A node can be released and re-claimed within one fade; the token lets a
   // stale fade-out bail instead of wiping the new owner's label and glow.
   const token = (node.token = (node.token || 0) + 1);
-  const fade = (el, to, ms) => {
-    const from = parseFloat(el.getAttribute('opacity') ?? '1');
+  const tween = (el, attr, to, ms) => {
+    const from = parseFloat(el.getAttribute(attr) ?? '1');
     return ctx.animate(ms, (t) => {
-      if (node.token === token) el.setAttribute('opacity', from + (to - from) * t);
+      if (node.token === token) el.setAttribute(attr, from + (to - from) * t);
     }).catch(() => {});
   };
+  const fade = (el, to, ms) => tween(el, 'opacity', to, ms);
   if (project) {
     node.rect.setAttribute('stroke', COLORS.activation);
     node.rect.setAttribute('fill', '#20190c');
     node.label.setAttribute('fill', COLORS.activation);
     node.sub.textContent = project.label;
     node.sub.setAttribute('fill', COLORS.activation);
+    tween(node.label, 'y', node.labelY.active, 200);
     fade(node.sub, 0.9, 200);
     fade(node.glow, 0.5, 250);
   } else {
     node.rect.setAttribute('stroke', COLORS.line);
     node.rect.setAttribute('fill', COLORS.panel);
     node.label.setAttribute('fill', COLORS.muted);
-    fade(node.sub, 0, 200).then(() => { if (node.token === token) node.sub.textContent = ''; });
+    fade(node.sub, 0, 200).then(() => {
+      if (node.token !== token) return;
+      node.sub.textContent = '';
+      tween(node.label, 'y', node.labelY.idle, 200);
+    });
     fade(node.glow, 0, 300);
   }
 }
@@ -379,7 +402,7 @@ async function pickFreeNode(ctx, nodes) {
     const free = nodes.filter((n) => !n.active);
     if (free.length) {
       // Claim before any await so concurrent deliveries can't share a node.
-      const node = free[Math.floor(Math.random() * free.length)];
+      const node = free[Math.floor(ctx.random() * free.length)];
       node.active = true;
       return node;
     }
@@ -389,23 +412,40 @@ async function pickFreeNode(ctx, nodes) {
 
 // ---------- fork: a real branch off the current tip of a lane ----------
 
-async function showFork(ctx, p) {
+// The fork's mini-lane sits in the band between the project box and the ACP
+// bar, on whichever side of the project's ACP connector the origin chip is,
+// so it never overlaps that connector or leaves the box's footprint.
+async function showFork(ctx, p, acpY) {
   if (!ctx.alive) return;
   const { COLORS } = ctx;
-  const origin = boundaryPoint(ctx, p.panel.lane);
+  const lane = p.panel.lane;
+  const origin = boundaryPoint(ctx, lane);
   if (!origin.chip) return;
   origin.chip.setAttribute('stroke', COLORS.fork);
   origin.chip.setAttribute('stroke-width', '1.5');
 
-  const endX = origin.x + 46, endY = origin.y + 40;
+  const forkW = 74, forkH = lane.h, inset = 10, clear = 10;
+  const px = p.x + p.w / 2, boxBottom = p.y + p.h;
+  const forkY = boxBottom + (acpY - boxBottom - forkH) / 2;
+  const [lo, hi] = origin.x >= px
+    ? [px + clear, p.x + p.w - inset - forkW]
+    : [p.x + inset, px - clear - forkW];
+  const forkX = Math.min(hi, Math.max(lo, origin.x - forkW / 2));
+  const forkLane = makeLane(ctx, forkX, forkY, forkW);
+  forkLane.g.setAttribute('opacity', 0);
+  // The branch leaves the origin chip's bottom edge and lands on top of the
+  // mini-lane's first chip.
+  const sx = origin.x, sy = origin.y + lane.chipH / 2;
+  const ex = forkX + forkLane.pad + forkLane.chipW / 2, ey = forkY;
+  const my = (sy + ey) / 2;
   const path = ctx.el('path', {
-    d: `M${origin.x},${origin.y} Q${origin.x + 8},${origin.y + 28} ${endX},${endY}`,
+    d: `M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}`,
     fill: 'none', stroke: COLORS.fork, 'stroke-width': 1.5, opacity: 0.9,
   });
   await ctx.draw(path, 320);
-  if (!ctx.alive) { path.remove(); return; }
+  if (!ctx.alive) { path.remove(); forkLane.g.remove(); return; }
+  forkLane.g.setAttribute('opacity', 1);
 
-  const forkLane = makeLane(ctx, endX, endY - 8, 74);
   const forkColors = [COLORS.fork, COLORS.thinking, COLORS.fork, COLORS.thinking];
   for (let i = 0; i < forkColors.length; i++) {
     if (!ctx.alive) break;
@@ -428,16 +468,16 @@ async function showFork(ctx, p) {
 
 // Never double-books a project: only ever returns projects that are
 // currently idle, even if that means fewer than `count`.
-function pickProjects(projects, count) {
-  const free = shuffle(projects.filter((p) => !p.busy));
+function pickProjects(ctx, projects, count) {
+  const free = shuffle(ctx, projects.filter((p) => !p.busy));
   return free.slice(0, count);
 }
 
 async function runFanOut(ctx, world) {
   const { chatPanel, chatWake, say } = world;
 
-  const count = 1 + Math.floor(Math.random() * 3);
-  const chosen = pickProjects(world.projects, count);
+  const count = 1 + Math.floor(ctx.random() * 3);
+  const chosen = pickProjects(ctx, world.projects, count);
   if (!chosen.length) return; // every project is already busy — try again next cycle
   chosen.forEach((p) => { p.busy = true; }); // claim immediately, before any await
 
@@ -474,13 +514,13 @@ async function deliverToProject(ctx, world, p) {
   setInboxCount(ctx, p.panel, 0);
   say(`${p.label} resumes its trajectory exactly where it left off on ${node.name}`);
 
-  const totalTicks = 5 + Math.floor(Math.random() * 3);
-  const suspendAt = Math.random() < 0.4 ? 2 + Math.floor(Math.random() * Math.max(1, totalTicks - 3)) : -1;
+  const totalTicks = 5 + Math.floor(ctx.random() * 3);
+  const suspendAt = ctx.random() < 0.4 ? 2 + Math.floor(ctx.random() * Math.max(1, totalTicks - 3)) : -1;
 
   for (let i = 0; i < totalTicks; i++) {
     if (!ctx.alive) return;
     tick(ctx, p.panel, BUILD_SEQ[i % BUILD_SEQ.length]);
-    await ctx.wait(360 + Math.random() * 240);
+    await ctx.wait(360 + ctx.random() * 240);
 
     if (i === Math.floor(totalTicks / 2)) {
       say(`${p.label} posts a progress update — ACP's NotifyParents appends it to the chat agent's inbox`);
@@ -492,7 +532,7 @@ async function deliverToProject(ctx, world, p) {
       p.panel.activity.textContent = 'suspended at iteration boundary';
       setNodeActive(ctx, node, null);
       say(`${p.label} suspends at an iteration boundary — it will resume on a fresh node`);
-      await ctx.wait(700 + Math.random() * 500);
+      await ctx.wait(700 + ctx.random() * 500);
       if (!ctx.alive) return;
       node = await pickFreeNode(ctx, nodes);
       say(`ACP sends a resume activation — ${node.name} picks it up and continues ${p.label}`);
@@ -537,10 +577,12 @@ async function sendBack(ctx, world, p, kind) {
 // message each other directly.
 async function viaAcp(ctx, world, p, dir, call, accent) {
   const { COLORS } = ctx;
-  const { chat, acpY, gutterX, chatLinkY } = world;
-  const px = p.x + p.w / 2, boxBottom = p.y + p.h, barY = acpY + 9;
-  const chatSide = [[chat.x, chatLinkY], [gutterX, chatLinkY], [gutterX, barY]];
-  const projectSide = [[px, boxBottom], [px, barY]];
+  const { chat, acpY, gutterX, chatLinkY, signals } = world;
+  const px = p.x + p.w / 2, boxBottom = p.y + p.h, barY = acpY + ACP_H / 2;
+  // The envelope leaves from and lands against the box edge, resting just
+  // outside it rather than straddling the border.
+  const chatSide = [[chat.x - ENV_W / 2, chatLinkY], [gutterX, chatLinkY], [gutterX, barY]];
+  const projectSide = [[px, boxBottom + ENV_H / 2], [px, barY]];
   const [inbound, outbound] = dir === 'down'
     ? [chatSide, [...projectSide].reverse()]
     : [projectSide, [...chatSide].reverse()];
@@ -563,8 +605,8 @@ async function viaAcp(ctx, world, p, dir, call, accent) {
   const leg = async (pts, ms) => {
     path = ctx.el('path', {
       d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'),
-      fill: 'none', stroke: COLORS.notify, 'stroke-width': 1.1, 'stroke-dasharray': '3 3', opacity: 0.5,
-    });
+      fill: 'none', stroke: COLORS.notify, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.5,
+    }, signals);
     ctx.setPos(env, pts[0][0], pts[0][1]);
     await ctx.along(env, path, ms, ctx.ease.inOut);
     path.remove();
@@ -589,7 +631,7 @@ async function viaAcp(ctx, world, p, dir, call, accent) {
 
 function envelope(ctx, color, accent) {
   const g = ctx.el('g', {});
-  ctx.el('rect', { x: -9, y: -6, width: 18, height: 12, rx: 2, fill: ctx.COLORS.panel, stroke: accent || color, 'stroke-width': 1.4 }, g);
+  ctx.el('rect', { x: -ENV_W / 2, y: -ENV_H / 2, width: ENV_W, height: ENV_H, rx: 2, fill: ctx.COLORS.panel, stroke: accent || color, 'stroke-width': 1.4 }, g);
   ctx.el('path', { d: 'M-9,-6 L0,1 L9,-6', fill: 'none', stroke: accent || color, 'stroke-width': 1.4 }, g);
   return g;
 }
@@ -600,16 +642,16 @@ function envelope(ctx, color, accent) {
 async function activationBolt(ctx, world, p, node) {
   const { COLORS } = ctx;
   const px = p.x + p.w / 2;
-  // Route along the lower edge of the bar, below the "AGENT CONTROL PLANE"
-  // label, so the signal never draws over the text.
-  const barY = world.acpY + 14;
+  // Ride exactly on the bar's bottom edge (the side facing the fleet), so the
+  // signal never crosses the "AGENT CONTROL PLANE" label.
+  const barY = world.acpY + ACP_H;
   const toX = node.x, toY = node.y;
 
-  await ctx.pulse(px, barY, COLORS.activation, 16, 380);
+  await layerPulse(ctx, world.signals, px, barY, COLORS.activation, 16, 380);
   const bolt = ctx.el('path', {
     d: `M${px},${barY} L${toX},${barY} L${toX},${toY}`,
     fill: 'none', stroke: COLORS.activation, 'stroke-width': 2, opacity: 0.9,
-  });
+  }, world.signals);
   await ctx.draw(bolt, 340);
   await ctx.fade(bolt, 0, 180);
   bolt.remove();
@@ -618,18 +660,32 @@ async function activationBolt(ctx, world, p, node) {
 
   // The node boots the agent: its run attaches to the agent's trajectory.
   const boot = ctx.el('path', {
-    d: `M${toX},${toY} L${toX},${world.acpY - 4} L${px},${world.acpY - 4} L${px},${p.y + p.h}`,
+    // Rides the bar's top edge (the side facing the agents).
+    d: `M${toX},${toY} L${toX},${world.acpY} L${px},${world.acpY} L${px},${p.y + p.h}`,
     fill: 'none', stroke: COLORS.iter, 'stroke-width': 2, 'stroke-dasharray': '4 3', opacity: 1,
-  });
+  }, world.signals);
   await ctx.draw(boot, 380);
   await ctx.fade(boot, 0, 200);
   boot.remove();
 }
 
-function shuffle(arr) {
+// ctx.pulse, but drawn into a given layer (under the ACP label plate).
+async function layerPulse(ctx, layer, x, y, color, r, ms) {
+  const c = ctx.el('circle', { cx: x, cy: y, r: 2, fill: 'none', stroke: color, 'stroke-width': 2 }, layer);
+  try {
+    await ctx.animate(ms, (t) => {
+      c.setAttribute('r', 2 + r * ctx.ease.out(t));
+      c.setAttribute('opacity', 1 - t);
+    }, (t) => t);
+  } finally {
+    c.remove();
+  }
+}
+
+function shuffle(ctx, arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(ctx.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;

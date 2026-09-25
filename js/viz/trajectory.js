@@ -11,6 +11,11 @@ const GUTTER_Y = 125; // midway between the two main rows — the wrap arrow's e
 const FORK_Y = [240, 305, 370];
 const EXT_Y = 435;
 const COL_X = [70, 178, 286, 394, 502, 610, 718];
+const EXT_GUTTER_Y = (FORK_Y[FORK_Y.length - 1] + EXT_Y) / 2; // lane for the wrap into the append row
+const NODE_R = 8;      // plain node: r=7 circle + half its 2px stroke
+const RING_R = 11.5;   // boundary node: dashed r=11 ring + half its 1px stroke
+const LABEL_DY = 20;   // label center sits this far above/below the node center
+const edgeR = (boundary) => (boundary ? RING_R : NODE_R);
 
 const ROW_A = [
   ['UserMessage', false], ['AgentStart', false], ['IterationStart', false],
@@ -59,8 +64,8 @@ export default {
         fill: COLORS.panel, stroke: COLORS.fork, 'stroke-width': 1.25,
       }, g);
       ctx.el('text', {
-        x: 0, y: 4, class: 'mono', 'font-size': 10.5, 'text-anchor': 'middle',
-        fill: COLORS.fork, text: label,
+        x: 0, y: 0, class: 'mono', 'font-size': 10.5, 'text-anchor': 'middle',
+        'dominant-baseline': 'central', fill: COLORS.fork, text: label,
       }, g);
       g._offset = headOffset(label);
       ctx.setPos(g, -100, -100);
@@ -88,60 +93,62 @@ export default {
     }
     function drawLabel(x, y, name, above) {
       return ctx.el('text', {
-        x, y: above ? y - 16 : y + 20, class: 'mono', 'font-size': 10.5,
-        'text-anchor': 'middle', fill: COLORS.text, opacity: 0, text: name,
+        x, y: above ? y - LABEL_DY : y + LABEL_DY, class: 'mono', 'font-size': 10.5,
+        'text-anchor': 'middle', 'dominant-baseline': 'central', fill: COLORS.text, opacity: 0, text: name,
       }, root);
     }
 
-    // A parent arrow that never cuts diagonally across the other row: it
-    // rises from the child into the gutter between the two main rows, runs
-    // flat along the gutter, then rises into the parent from below. Used for
-    // the one edge that wraps ROW_B's start back to ROW_A's end.
-    let orthoMarkerReady = false;
-    function ensureOrthoMarker(color) {
-      const id = 'traj-ortho-arrowhead';
-      if (orthoMarkerReady) return id;
-      const svg = ctx.svg;
-      let defs = svg.querySelector('defs');
-      if (!defs) defs = ctx.el('defs', {}, svg);
-      const m = ctx.el('marker', {
-        id, viewBox: '0 0 10 10', refX: 9, refY: 5,
-        markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse',
-      }, defs);
-      ctx.el('path', { d: 'M0,1 L9,5 L0,9 z', fill: color }, m);
-      orthoMarkerReady = true;
-      return id;
-    }
-    function orthoArrow(x1, y1, x2, y2, gutterY, color = COLORS.line) {
-      const id = ensureOrthoMarker(color);
-      const d = `M${x1},${y1} L${x1},${gutterY} L${x2},${gutterY} L${x2},${y2}`;
-      return ctx.el('path', {
-        d, fill: 'none', stroke: color, 'stroke-width': 1.25, 'marker-end': `url(#${id})`,
-      }, root);
+    // Parent arrow from the child's edge to the parent's edge (never center
+    // to center, so the head touches the parent's outline). With `gutter`
+    // the route is orthogonal: out of the child vertically into the gutter
+    // lane, flat along it, then vertically into the parent — used for row
+    // wraps and forks so no edge cuts diagonally across another row.
+    // Also returns the untrimmed center-to-center route for the backward walk.
+    function parentArrow(c, p, { color = COLORS.line, gutter = null, dash, width = 1.25 } = {}) {
+      const rc = edgeR(c.boundary), rp = edgeR(p.boundary);
+      let d, walkD;
+      if (gutter != null && c.x !== p.x) {
+        const y1 = c.y + Math.sign(gutter - c.y) * rc;
+        const y2 = p.y + Math.sign(gutter - p.y) * rp;
+        d = `M${c.x},${y1} L${c.x},${gutter} L${p.x},${gutter} L${p.x},${y2}`;
+        walkD = `M${c.x},${c.y} L${c.x},${gutter} L${p.x},${gutter} L${p.x},${p.y}`;
+      } else {
+        const dx = p.x - c.x, dy = p.y - c.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        d = `M${c.x + ux * rc},${c.y + uy * rc} L${p.x - ux * rp},${p.y - uy * rp}`;
+        walkD = `M${c.x},${c.y} L${p.x},${p.y}`;
+      }
+      // ctx.arrow registers the per-color arrowhead marker; then take its route.
+      const path = ctx.arrow(0, 0, 1, 0, { color, dash, width });
+      path.setAttribute('d', d);
+      return { path, walkD };
     }
 
     // Appends one event: slides in from the parent position, draws its
     // parent arrow, updates the counter, and (optionally) moves a head tag.
-    async function addEvent({ x, y, name, boundary, parent, above, head, arrowColor, curve = 0, gutter = null }) {
+    async function addEvent({ x, y, name, boundary, parent, above, head, arrowColor, gutter = null }) {
       const g = drawDot(x, y, name, boundary);
       const label = drawLabel(x, y, name, above);
       const from = parent ? { x: parent.x, y: parent.y } : { x: x - 40, y };
       ctx.setPos(g, from.x, from.y);
 
-      let path = null;
+      let path = null, walkD = null;
       await Promise.all([
         ctx.move(g, x, y, 420),
         ctx.animate(420, (t) => { g.setAttribute('opacity', t); label.setAttribute('opacity', t); }),
       ]);
       if (parent) {
-        path = gutter != null
-          ? orthoArrow(x, y, parent.x, parent.y, gutter, arrowColor || COLORS.line)
-          : ctx.arrow(x, y, parent.x, parent.y, { color: arrowColor || COLORS.line, curve, width: 1.25 });
+        ({ path, walkD } = parentArrow(
+          { x, y, boundary },
+          { x: parent.x, y: parent.y, boundary: !!(parent.ev && parent.ev.boundary) },
+          { color: arrowColor || COLORS.line, gutter },
+        ));
         await ctx.draw(path, 300);
       }
       stored += 1;
       renderCounter();
-      const ev = { name, x, y, boundary, parentEv: parent ? parent.ev : null, path };
+      const ev = { name, x, y, boundary, parentEv: parent ? parent.ev : null, path, walkD };
       events.push(ev);
       if (head) {
         await ctx.move(head, x + head._offset, y, 300);
@@ -182,10 +189,10 @@ export default {
       }
       const name = EXT_PATTERN[extCount % EXT_PATTERN.length];
       const boundary = name === 'IterationEnd';
-      const x = 70 + extCount * 150, y = EXT_Y;
+      const x = COL_X[extCount], y = EXT_Y;
       const ev = await addEvent({
-        x, y, name, boundary, parent: extTip, above: extCount % 2 === 0, head: mainHead,
-        curve: extCount === 0 ? -60 : 0,
+        x, y, name, boundary, parent: extTip, above: false, head: mainHead,
+        gutter: extCount === 0 ? EXT_GUTTER_Y : null, // wrap down like the main row does
       });
       extTip = { x, y, ev };
       if (boundary) lastBoundaryMain = extTip;
@@ -248,7 +255,7 @@ export default {
       const [name, boundary] = ROW_B[i];
       const x = COL_X[i], y = ROW_B_Y;
       const ev = await addEvent({
-        x, y, name, boundary, parent: prev, above: i % 2 === 0, head: mainHead,
+        x, y, name, boundary, parent: prev, above: i % 2 === 1, head: mainHead,
         gutter: i === 0 ? GUTTER_Y : null,
       });
       prev = { x, y, ev };
@@ -268,9 +275,14 @@ export default {
       const x0 = COL_X[1];
       const head = makeHead(label);
       let p = { x: fromEv.x, y: fromEv.y, ev: fromEv };
+      // Parent above (main rows): rise orthogonally through the gutter just
+      // above this lane. Parent below (the append row): a straight drop, with
+      // the label moved above the node so the arrow never crosses it.
+      const parentAbove = fromEv.y < y;
+      const gutter = parentAbove ? ((laneIndex === 0 ? ROW_B_Y : FORK_Y[laneIndex - 1]) + y) / 2 : null;
       const cfg = await addEvent({
         x: x0, y, name: 'ThreadForkConfig', boundary: false, parent: p,
-        above: false, head, arrowColor: COLORS.fork, curve: 40,
+        above: !parentAbove, head, arrowColor: COLORS.fork, gutter,
       });
       p = { x: x0, y, ev: cfg };
       const extra = [
@@ -308,9 +320,12 @@ export default {
     );
     let cur = tipEv;
     while (cur.parentEv && ctx.alive) {
-      await ctx.along(marker, cur.path, 480, undefined);
+      // Ride the center-to-center route (the drawn arrow is trimmed to the
+      // node edges), so the ring starts and lands exactly on node centers.
+      const route = ctx.el('path', { d: cur.walkD, fill: 'none', stroke: 'none' }, root);
+      await ctx.along(marker, route, 480);
+      route.remove();
       cur = cur.parentEv;
-      ctx.setPos(marker, cur.x, cur.y); // snap to the node's own center, not the path's raw endpoint
       await ctx.pulse(cur.x, cur.y, COLORS.activation, 16, 360);
     }
     await ctx.fade(marker, 0, 300);
@@ -318,14 +333,19 @@ export default {
     await ctx.beat('The fork sees the exact same history all the way back to UserMessage — for free.');
 
     // ---------- never merge ----------
-    const ghost = ctx.arrow(forkLanes[0].tip.ev.x, forkLanes[0].tip.ev.y, lastBoundaryMain.x, lastBoundaryMain.y, {
-      color: COLORS.muted, dash: '5 4', width: 1.5, curve: -30,
+    const { path: ghost } = parentArrow(forkLanes[0].tip.ev, lastBoundaryMain.ev, {
+      color: COLORS.muted, dash: '5 4', width: 1.5,
     });
     await ctx.draw(ghost, 500);
-    const mx = (forkLanes[0].tip.ev.x + lastBoundaryMain.x) / 2;
-    const my = (forkLanes[0].tip.ev.y + lastBoundaryMain.y) / 2 - 15;
+    // Strike the ghost at its own midpoint, perpendicular to it, short enough
+    // to stay clear of the neighbouring labels.
+    const { x: mx, y: my } = ctx.pointOnPath(ghost, 0.5);
+    const a0 = ctx.pointOnPath(ghost, 0.45), a1 = ctx.pointOnPath(ghost, 0.55);
+    const tl = Math.hypot(a1.x - a0.x, a1.y - a0.y) || 1;
+    const STRIKE_HALF = 14;
+    const nx = (-(a1.y - a0.y) / tl) * STRIKE_HALF, ny = ((a1.x - a0.x) / tl) * STRIKE_HALF;
     const strike = ctx.el('line', {
-      x1: mx - 26, y1: my - 26, x2: mx + 26, y2: my + 26,
+      x1: mx - nx, y1: my - ny, x2: mx + nx, y2: my + ny, 'stroke-linecap': 'round',
       stroke: COLORS.revert, 'stroke-width': 3,
     }, root);
     await ctx.draw(strike, 250);

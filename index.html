@@ -20,7 +20,7 @@
       and <strong>when it should run</strong>. Lovable keeps them apart — trajectories, context projection, and
       inboxes + activations. (On a typical weekday, Lovable’s Trajectory System appends roughly half a billion events, covering about 2.6 million user turns.) Every animation below is one of those ideas slowed down enough to watch.
     </p>
-    <p class="source">Based on <a href="https://lovable.dev/blog/how-lovable-agents-work-together">lovable.dev/blog/how-lovable-agents-work-together</a>. Every figure runs itself when scrolled into view; use <em>Step</em> and <em>Back</em> to move one beat at a time, and the speed slider to slow things down.</p>
+    <p class="source">Based on <a href="https://lovable.dev/blog/how-lovable-agents-work-together">lovable.dev/blog/how-lovable-agents-work-together</a>. Every figure runs itself when scrolled into view. Prefer to go at your own pace? Switch to <em>Step by step</em> (bottom right): figures then wait for you, and <em>Next</em> / <em>Back</em> — or the ← → keys — move one beat at a time.</p>
   </header>
 
   <figure id="viz-hero"></figure>
@@ -156,6 +156,11 @@
     </p>
   </footer>
 </main>
+<div class="mode-switch" role="radiogroup" aria-label="Playback mode">
+  <span class="mode-label">Playback</span>
+  <button type="button" role="radio" data-mode="auto">Auto</button>
+  <button type="button" role="radio" data-mode="manual">Step by step</button>
+</div>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

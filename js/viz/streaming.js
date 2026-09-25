@@ -10,25 +10,32 @@
 const W = 900, H = 480;
 
 // ---------- layout ----------
-const LLM = { x: 20, y: 70, w: 100, h: 110 };
-const AGENT = { x: 190, y: 70, w: 120, h: 110 };
-const TAB1 = { x: 470, y: 28, w: 260, h: 165 };
-const TAB2 = { x: 470, y: 224, w: 260, h: 165 };
-const BAND = { x: 10, y: 16, w: 870, h: 388 }; // live side channel
-const LANE = { x: 20, y: 422, w: 860, h: 42 }; // trajectory
-const LOG = { x: 24, y: 200, w: 380, h: 190 }; // wire log, under LLM/Agent
+const BAND = { x: 10, y: 16, w: 880, h: 384 }; // live side channel
+const LANE = { x: 10, y: 422, w: 880, h: 42 }; // trajectory
+const PAD = 20; // band inner padding, left and right
+const HEAD_Y = BAND.y + 18; // baseline shared by the band label and tab 1's title
+const LLM = { x: BAND.x + PAD, y: 70, w: 120, h: 110 };
+const AGENT = { x: LLM.x + LLM.w + 50, y: 70, w: 120, h: 110 };
+// Tab interior: a 32-unit strip on top where delta chips dock, then two
+// 52-unit bubbles (id row + two text lines) separated by 8, 14 padding.
+const STRIP_H = 32, BUBBLE_H = 52, BUBBLE_GAP = 8, TAB_PAD = 14;
+const TAB_W = 380, TAB_H = STRIP_H + BUBBLE_H * 2 + BUBBLE_GAP + TAB_PAD;
+const TAB_X = BAND.x + BAND.w - PAD - TAB_W;
+const TAB1 = { x: TAB_X, y: HEAD_Y + 8, w: TAB_W, h: TAB_H };
+const TAB2 = { x: TAB_X, y: TAB1.y + TAB_H + 30, w: TAB_W, h: TAB_H };
+const LOG = { x: LLM.x, y: 200, w: 380, h: BAND.y + BAND.h - 12 - 200 }; // wire log, under LLM/Agent
 const ARROW_X = 440; // free vertical corridor between the log and the tabs
+const MONO_CH = 6.6; // advance of an 11px mono glyph
 
 const AGENT_OUT = { x: AGENT.x + AGENT.w, y: AGENT.y + AGENT.h / 2 };
 const LLM_OUT = { x: LLM.x + LLM.w, y: LLM.y + LLM.h / 2 };
-const TAB1_IN = { x: TAB1.x, y: TAB1.y + TAB1.h / 2 };
 
 const THINK_WORDS = ['Let', 'me', 'check', 'the', 'auth', 'flow', 'before', 'touching', 'the', 'route.'];
 const CONTENT_WORDS = ["I've", 'reviewed', 'the', 'middleware —', 'updating', 'the', 'redirect', 'now.'];
 
 function wrapText(node, text, maxWidth, fontSize, lh, maxLines = 3) {
   node.textContent = '';
-  const charW = fontSize * 0.6;
+  const charW = fontSize * 0.55; // average advance of the sans body face
   const perLine = Math.max(6, Math.floor(maxWidth / charW));
   const words = text.split(' ').filter(Boolean);
   const lines = [];
@@ -66,7 +73,7 @@ export default {
       fill: 'none', stroke: COLORS.muted, 'stroke-opacity': 0.35, 'stroke-dasharray': '5 4',
     });
     el('text', {
-      x: BAND.x + 14, y: BAND.y + 18, class: 'mono', 'font-size': 10.5,
+      x: BAND.x + 12, y: HEAD_Y, class: 'mono', 'font-size': 10.5,
       fill: COLORS.muted, 'letter-spacing': '0.06em', text: 'LIVE SIDE CHANNEL · NOT PERSISTED',
     });
 
@@ -83,43 +90,48 @@ export default {
     const agentBox = box({ ...AGENT, title: 'Agent' });
     box({ ...TAB1, title: 'Browser tab 1' });
 
-    el('text', { x: LLM.w / 2, y: LLM.h / 2 - 6, class: 'mono', 'font-size': 20, fill: COLORS.muted, text: '⋯', 'text-anchor': 'middle' }, llmBox);
+    // Both boxes show two rows at the same heights: h/2 -/+ 10.
+    const ROW1 = LLM.h / 2 - 10, ROW2 = LLM.h / 2 + 10;
+    el('text', { x: LLM.w / 2, y: ROW1, class: 'mono', 'font-size': 20, fill: COLORS.muted, text: '⋯', 'text-anchor': 'middle', 'dominant-baseline': 'central' }, llmBox);
     const llmTokenEl = el('text', {
-      x: LLM.w / 2, y: LLM.h / 2 + 18, class: 'mono', 'font-size': 11, fill: COLORS.text,
-      'text-anchor': 'middle', text: 'token stream',
+      x: LLM.w / 2, y: ROW2, class: 'mono', 'font-size': 11, fill: COLORS.text,
+      'text-anchor': 'middle', 'dominant-baseline': 'central', text: 'token stream',
     }, llmBox);
+    const LLM_MAX_CH = Math.floor((LLM.w - 16) / MONO_CH); // keep 8 units clear of each border
     const llmRecent = [];
     function pushToken(word) {
       llmRecent.push(word);
-      if (llmRecent.length > 2) llmRecent.shift();
+      while (llmRecent.length > 2 || (llmRecent.length > 1 && llmRecent.join(' ').length > LLM_MAX_CH)) llmRecent.shift();
       llmTokenEl.textContent = llmRecent.join(' ');
     }
 
     // Agent's own live view: which partial(s) it currently has open, and how
     // many characters have accumulated in the field being edited.
     const agentIdEl = el('text', {
-      x: AGENT.w / 2, y: AGENT.h / 2 - 2, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
-      'text-anchor': 'middle', text: 'no open partial',
+      x: AGENT.w / 2, y: AGENT.h / 2, class: 'mono', 'font-size': 10.5, fill: COLORS.muted,
+      'text-anchor': 'middle', 'dominant-baseline': 'central', text: 'no open partial',
     }, agentBox);
     const agentDetailEl = el('text', {
-      x: AGENT.w / 2, y: AGENT.h / 2 + 16, class: 'mono', 'font-size': 10.5, fill: COLORS.text,
-      'text-anchor': 'middle', text: '',
+      x: AGENT.w / 2, y: ROW2, class: 'mono', 'font-size': 10.5, fill: COLORS.text,
+      'text-anchor': 'middle', 'dominant-baseline': 'central', text: '',
     }, agentBox);
     function renderAgentPanel(open) {
       if (!open) {
         agentIdEl.setAttribute('fill', COLORS.muted);
+        agentIdEl.setAttribute('y', AGENT.h / 2); // lone row: box middle
         agentIdEl.textContent = 'no open partial';
         agentDetailEl.textContent = '';
         return;
       }
       const chars = open.words.join(' ').length;
       agentIdEl.setAttribute('fill', colorOf(open.kind));
+      agentIdEl.setAttribute('y', ROW1);
       agentIdEl.textContent = open.id;
       agentDetailEl.textContent = `${open.kind} · ${chars} ch`;
     }
 
     // main static arrow: llm -> agent (raw model stream)
-    ctx.arrow(LLM_OUT.x, LLM_OUT.y, AGENT.x, AGENT.y + AGENT.h / 2, { color: COLORS.muted, width: 1.25, dash: '3 3' });
+    ctx.arrow(LLM_OUT.x, LLM_OUT.y, AGENT.x, LLM_OUT.y, { color: COLORS.muted, width: 1.25, dash: '3 3' });
 
     // ---- wire log: what actually goes out on the not-persisted channel ----
     el('text', {
@@ -144,14 +156,17 @@ export default {
     }
 
     // ---- trajectory lane state ----
+    const PILL_H = 26;
     let laneX = LANE.x + 10;
-    const laneY = LANE.y + LANE.h / 2 - 13;
+    const laneY = LANE.y + (LANE.h - PILL_H) / 2;
     const persisted = [];
     function appendTrajectory({ type, label }) {
-      const w = Math.max(70, label.length * 6.6 + 24);
-      const p = eventPill({ x: laneX, y: laneY, type, label, w, h: 26 });
-      if (persisted.length) {
-        ctx.arrow(laneX - 4, laneY + 13, laneX, laneY + 13, { color: COLORS.line, width: 1, head: false, dash: '2 3' });
+      const w = Math.max(70, label.length * MONO_CH + 24);
+      const p = eventPill({ x: laneX, y: laneY, type, label, w, h: PILL_H });
+      const prev = persisted[persisted.length - 1];
+      if (prev) {
+        // bridge the whole gap: previous pill's right edge -> this pill's left edge
+        ctx.arrow(prev.x + prev.w, laneY + PILL_H / 2, laneX, laneY + PILL_H / 2, { color: COLORS.line, width: 1, head: false, dash: '2 3' });
       }
       persisted.push({ type, label, pill: p, x: laneX, w });
       laneX += w + 14;
@@ -165,20 +180,22 @@ export default {
 
     // ---- browser tab bubble slots ----
     function makeTab(tabRect) {
-      const thinkSlot = { x: tabRect.x + 14, y: tabRect.y + 30, w: tabRect.w - 28, h: 56 };
-      const contentSlot = { x: tabRect.x + 14, y: tabRect.y + 96, w: tabRect.w - 28, h: 60 };
-      // Where delta chips dock: right at the tab's own left border, in the
-      // clear strip above the thinking bubble. Chips travel from the agent
-      // (always to the tab's left) and stop at this threshold, so the
-      // straight-line flight path never has to cross the bubble text to get
-      // there — it arrives at the edge of the tab, not deep inside it.
-      const dock = { x: tabRect.x + 6, y: tabRect.y + 16 };
+      const x = tabRect.x + TAB_PAD, w = tabRect.w - 2 * TAB_PAD;
+      const thinkSlot = { x, y: tabRect.y + STRIP_H, w, h: BUBBLE_H };
+      const contentSlot = { x, y: thinkSlot.y + BUBBLE_H + BUBBLE_GAP, w, h: BUBBLE_H };
+      // Where delta chips dock: the clear strip above the thinking bubble,
+      // left-aligned with the bubbles. Chips come in from the tab's left.
+      const dock = { x, y: tabRect.y + STRIP_H / 2 };
       return { rect: tabRect, thinkSlot, contentSlot, dock, bubbles: {} };
     }
     const tab1 = makeTab(TAB1);
     let tab2 = null; // created on demand
 
     function bubbleSlot(tab, kind) { return kind === 'thinking' ? tab.thinkSlot : tab.contentSlot; }
+    function pulseBubble(tab, kind, r, ms) {
+      const s = bubbleSlot(tab, kind);
+      return ctx.pulse(s.x + s.w / 2, s.y + s.h / 2, colorOf(kind), r, ms);
+    }
 
     function createBubble(tab, kind, id) {
       removeBubble(tab, kind); // a slot only ever holds one in-flight block at a time
@@ -203,7 +220,7 @@ export default {
 
     function appendWord(handle, word) {
       handle.words.push(word);
-      wrapText(handle.txt, handle.words.join(' '), handle.slot.w - 16, 11, 13);
+      wrapText(handle.txt, handle.words.join(' '), handle.slot.w - 16, 11, 13, 2);
     }
 
     function solidify(handle) {
@@ -221,20 +238,49 @@ export default {
     // ---- streaming state (so late joiners / refresh can read "now") ----
     const state = { openPartial: null }; // { id, kind, words }
 
-    // Fly a small dashed chip from `from` to a tab's dock point — the tab's
-    // own left border, in the clear strip above the bubble — so the flight
-    // path never has to cross into the bubble text, then fade it out in
-    // place before the caller mutates any text underneath.
-    async function flyChip(from, tab, label, color, ms = 650) {
-      const w = label.length * 6.2 + 20, h = 22;
-      const toX = tab.dock.x, toY = tab.dock.y - h / 2;
-      const fromX = from.x, fromY = from.y - h / 2;
-      const g = eventPill({ x: fromX, y: fromY, name: label, label, w, h, partial: true });
-      g.querySelector('rect').setAttribute('stroke', color);
-      g.querySelector('text').setAttribute('fill', color);
-      await ctx.animate(ms, (t) => {
-        setPos(g, fromX + (toX - fromX) * t, fromY + (toY - fromY) * t);
+    // A dashed chip whose label is centered vertically and padded 10 each side.
+    function chip(x, y, label, color, name = label) {
+      const h = 22, w = label.length * MONO_CH + 20;
+      const g = eventPill({ x, y, name, label, w, h, partial: true });
+      const t = g.querySelector('text');
+      t.setAttribute('y', h / 2);
+      t.setAttribute('dominant-baseline', 'central');
+      if (color) { g.querySelector('rect').setAttribute('stroke', color); t.setAttribute('fill', color); }
+      return g;
+    }
+
+    // Fly a chip along a polyline (points are top-left corners) so that it
+    // lands exactly on the last point.
+    function flyPath(g, pts, ms) {
+      const segs = [];
+      let total = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        segs.push({ a: pts[i - 1], b: pts[i], len });
+        total += len;
+      }
+      return ctx.animate(ms, (t) => {
+        let d = t * total;
+        for (const s of segs) {
+          if (d <= s.len || s === segs[segs.length - 1]) {
+            const k = s.len ? Math.min(1, d / s.len) : 1;
+            setPos(g, s.a.x + (s.b.x - s.a.x) * k, s.a.y + (s.b.y - s.a.y) * k);
+            return;
+          }
+          d -= s.len;
+        }
       }, ctx.ease.out);
+    }
+
+    // Fly a small dashed chip from `from` to a tab's dock strip, then fade it
+    // out in place before the caller mutates any text underneath. It first
+    // flies to a staging point outside the tab, level with the strip, then
+    // slides straight in — so its body never passes over the bubble text.
+    async function flyChip(from, tab, label, color, ms = 650) {
+      const g = chip(from.x, from.y - 11, label, color);
+      const y = tab.dock.y - g._h / 2;
+      const stage = { x: tab.rect.x - 8 - g._w, y };
+      await flyPath(g, [{ x: from.x, y: from.y - g._h / 2 }, stage, { x: tab.dock.x, y }], ms);
       await ctx.fade(g, 0, 120);
       g.remove();
     }
@@ -275,18 +321,24 @@ export default {
       const persistedLabel = `${label} #${id}`;
       wireLog(`Event ${persistedLabel} (persisted)`, COLORS.text);
       const pill = appendTrajectory({ type: kind, label: persistedLabel });
-      // Route as a right-angle drop through the free corridor at ARROW_X
-      // (between the wire log and the browser tabs) so the dashed line never
-      // crosses the log text on its way down to the trajectory lane.
-      const dropY = AGENT.y + AGENT.h + 24;
-      const arrowOpts = { color: COLORS.line, width: 1, dash: '2 3' };
-      ctx.arrow(AGENT.x + AGENT.w / 2, AGENT.y + AGENT.h, ARROW_X, dropY, { ...arrowOpts, head: false });
-      ctx.arrow(ARROW_X, dropY, ARROW_X, laneY, { ...arrowOpts, head: false });
-      ctx.arrow(ARROW_X, laneY, pill._x + 6, laneY, arrowOpts);
+      // Orthogonal route: down from the agent's bottom center into the lane
+      // between the agent and the log's first line, across to the free
+      // corridor at ARROW_X (between the log and the tabs), down to the lane
+      // between the band's bottom border and the trajectory box, across to
+      // the pill's center, and down onto its top edge.
+      const ax = AGENT.x + AGENT.w / 2, ay = AGENT.y + AGENT.h;
+      const dropY = (ay + LOG_TOP - 8) / 2; // 8 = cap height of the first log line
+      const jogY = (BAND.y + BAND.h + LANE.y) / 2;
+      const px = pill._x + pill._w / 2;
+      el('path', {
+        d: `M${ax},${ay} V${dropY} H${ARROW_X} V${jogY} H${px}`,
+        fill: 'none', stroke: COLORS.line, 'stroke-width': 1, 'stroke-dasharray': '2 3',
+      });
+      ctx.arrow(px, jogY, px, laneY, { color: COLORS.line, width: 1, dash: '2 3' });
       await Promise.all([
-        ctx.pulse(pill._x + pill._w / 2, laneY + 13, colorOf(kind), 20, 550),
-        ctx.pulse(tab1.rect.x + tab1.rect.w / 2, bubbleSlot(tab1, kind).y + 24, colorOf(kind), 20, 550),
-        tab2 ? ctx.pulse(tab2.rect.x + tab2.rect.w / 2, bubbleSlot(tab2, kind).y + 24, colorOf(kind), 20, 550) : Promise.resolve(),
+        ctx.pulse(px, laneY + PILL_H / 2, colorOf(kind), 20, 550),
+        pulseBubble(tab1, kind, 20, 550),
+        tab2 ? pulseBubble(tab2, kind, 20, 550) : Promise.resolve(),
       ]);
       solidify(tab1.bubbles[kind]);
       if (tab2 && tab2.bubbles[kind]) solidify(tab2.bubbles[kind]);
@@ -314,11 +366,12 @@ export default {
 
       // batch: persisted events replay as one compact burst
       wireLog(`Batch → tab2: ${persisted.length} persisted events`, COLORS.muted);
-      const batch = eventPill({
-        x: LANE.x + 10, y: TAB2.y - 34, name: 'batch',
-        label: `batch: ${persisted.length} persisted events`, w: 210, h: 22, partial: true,
-      });
-      await ctx.move(batch, TAB2.x + 8, TAB2.y - 34, 500);
+      // It rises out of the next free slot in the lane into tab 2's (still
+      // empty) dock strip.
+      const batch = chip(0, 0, `batch: ${persisted.length} persisted events`, null, 'batch');
+      const bx = Math.min(laneX, LANE.x + LANE.w - 10 - batch._w);
+      setPos(batch, bx, laneY + (PILL_H - batch._h) / 2);
+      await ctx.move(batch, tab2.dock.x, tab2.dock.y - batch._h / 2, 500);
       await ctx.fade(batch, 0, 250);
       batch.remove();
 
@@ -328,9 +381,9 @@ export default {
         wireLog(`Materialize ${kind}#${id} (folded, ${words.length} deltas)`, colorOf(kind));
         const h = createBubble(tab2, kind, id);
         h.idLabel.textContent = `${kind} #${id} (materialized)`;
-        wrapText(h.txt, words.join(' '), h.slot.w - 16, 11, 13);
+        wrapText(h.txt, words.join(' '), h.slot.w - 16, 11, 13, 2);
         h.words = words.slice();
-        await ctx.pulse(tab2.rect.x + tab2.rect.w / 2, bubbleSlot(tab2, kind).y + 24, colorOf(kind), 18, 500);
+        await pulseBubble(tab2, kind, 18, 500);
       }
     }
 
@@ -342,9 +395,9 @@ export default {
         wireLog(`Materialize ${kind}#${id} (folded, ${words.length} deltas) → tab1`, colorOf(kind));
         const h = createBubble(tab1, kind, id);
         h.idLabel.textContent = `${kind} #${id} (materialized)`;
-        wrapText(h.txt, words.join(' '), h.slot.w - 16, 11, 13);
+        wrapText(h.txt, words.join(' '), h.slot.w - 16, 11, 13, 2);
         h.words = words.slice();
-        await ctx.pulse(tab1.rect.x + tab1.rect.w / 2, bubbleSlot(tab1, kind).y + 24, colorOf(kind), 18, 500);
+        await pulseBubble(tab1, kind, 18, 500);
       }
     }
 
