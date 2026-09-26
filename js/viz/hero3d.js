@@ -6,7 +6,7 @@
 // the node to its station. Built alongside the 2D hero, not instead of it.
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
-import { CHAT_CYCLE, listOf } from '../story.js';
+import { CHAT_CYCLE, listOf, MESSAGE_PREVIEW } from '../story.js';
 
 // ---------- world layout (all in "world units", independent of pixels) ----------
 const BELT_LEN = 320, BELT_W = 46;
@@ -534,9 +534,13 @@ function updateOverlay(camera, w, h, world) {
   const acpCallPoint = world.acpCallFollow
     ? world.acpCallFollow.position.clone().add(new THREE.Vector3(0, 22, 0))
     : world.acpCallAnchor;
+  const messagePoint = world.messageFollow
+    ? world.messageFollow.position.clone().add(new THREE.Vector3(0, 13, 0))
+    : world.messageAnchor;
   layoutLabels(camera, w, h, [
     { point: world.acpAnchor, el: world.acpDomLabel },
     { point: acpCallPoint, el: world.acpCallLabel },
+    { point: messagePoint, el: world.messageLabel },
     { point: world.chat.anchor, el: world.chat.nameLabel.el },
     ...world.builders.map((b) => ({ point: b.anchor, el: b.nameLabel.el })),
     ...world.nodes.map((n) => ({ point: n.anchor, el: n.nameLabel.el })),
@@ -710,15 +714,29 @@ function buildWorld(ctx, scene, overlay) {
   acpDomLabel.style.fontSize = '9px';
   acpDomLabel.style.letterSpacing = '.09em';
   const acpCallLabel = makeLabel(overlay, '', { color: ctx.COLORS.notify, opacity: 0, role: ctx.COLORS.notify, panel: ctx.COLORS.panel });
+  // The self-contained message the chat agent writes for a builder — shown
+  // near the chat agent once written, then follows the envelope through
+  // delivery ("the builder only ever sees the message it was sent").
+  const messageLabel = makeLabel(overlay, '', { color: ctx.COLORS.text, opacity: 0, role: ctx.COLORS.api, panel: ctx.COLORS.panel });
 
   return {
     belt, chat, builders, nodes,
     acpAnchor: new THREE.Vector3(BELT_LEN / 2 - 24, 7, 14),
     acpCallAnchor: new THREE.Vector3(0, 30, 0),
     acpDomLabel, acpCallLabel, acpInFlight: 0, acpCallFollow: null,
+    messageLabel, messageAnchor: new THREE.Vector3(chat.x, 40, 0), messageFollow: null,
     lastSaid: 0,
     say(ctx2, text) { ctx2.caption(text); this.lastSaid = ctx2.now(); },
   };
+}
+
+function showMessage(world, text) {
+  world.messageLabel.textContent = text;
+  world.messageLabel.style.opacity = '1';
+}
+function hideMessage(world) {
+  world.messageLabel.style.opacity = '0';
+  world.messageFollow = null;
 }
 
 // ---------- render loop ----------
@@ -1153,14 +1171,45 @@ async function guidedTour3d(ctx, scene, world) {
         setChatStatus(ctx, chat, 'running');
         await admitPending(ctx, scene, chat);
         break;
+      case 'propose':
+        tickBuilder(ctx, scene, chat, 'iter');
+        await ctx.wait(380);
+        tickBuilder(ctx, scene, chat, 'content');
+        await ctx.wait(420);
+        tickBuilder(ctx, scene, chat, 'iter');
+        tickBuilder(ctx, scene, chat, 'agent'); // AgentDone — its turn ends
+        setChatStatus(ctx, chat, 'asleep');
+        chat.nameLabel.rows[1].textContent = 'waiting for confirmation';
+        break;
+      case 'confirm-inbox':
+        queueInboxMessage(ctx, scene, chat, 'user');
+        await pulse3d(ctx, scene, chat.anchor, ctx.colorOf('user'), 14, 350);
+        await pulse3d(ctx, scene, chat.anchor, ctx.COLORS.activation, 14, 300);
+        // Woken by the activation; not yet admitted onto its trajectory.
+        setChatStatus(ctx, chat, 'running');
+        chat.nameLabel.rows[1].textContent = 'reading its inbox';
+        break;
+      case 'confirm-admit':
+        await admitPending(ctx, scene, chat);
+        chat.nameLabel.rows[1].textContent = 'writing message';
+        // The chat agent is responsible for writing a self-contained
+        // message — the builder only ever sees this, never the user's words.
+        world.messageFollow = null;
+        world.messageAnchor.copy(chat.anchor);
+        showMessage(world, MESSAGE_PREVIEW(p.label));
+        break;
       case 'send-message':
         // Ends with the envelope resting on the belt — not yet in dashboard's inbox.
         dashboardEnvelope = await sendToBelt(ctx, scene, world, chat.sendPoint);
+        // The preview now follows the same envelope through both hops.
+        world.messageFollow = dashboardEnvelope;
         break;
       case 'inbox-append':
         // Its turn done, the chat agent sleeps until a notification arrives.
         setChatStatus(ctx, chat, 'asleep');
         await carryToBin(ctx, scene, world, dashboardEnvelope, p, 'notify');
+        // The message briefly showed at the builder — the only thing it sees.
+        ctx.spawn(async () => { await ctx.wait(900); if (ctx.alive) hideMessage(world); });
         break;
       case 'activation':
         node = await pickFreeNode(ctx, world.nodes);
@@ -1241,6 +1290,9 @@ async function runFanOut3d(ctx, scene, world) {
   await pulse3d(ctx, scene, world.chat.anchor, ctx.COLORS.activation, 14, 300);
   setChatStatus(ctx, world.chat, 'running');
   await admitPending(ctx, scene, world.chat);
+  // Ambient skips the confirm step (it's the idle overview), but still
+  // shows a confirmation happened before the message goes out.
+  world.chat.nameLabel.rows[1].textContent = 'confirmed · sending';
   world.say(ctx, `chat agent calls send_message_to_project for ${listOf(chosen.map((b) => b.label))} — ACP delivers it`);
 
   await Promise.all(chosen.map((b) => deliverToBuilder3d(ctx, scene, world, b)));

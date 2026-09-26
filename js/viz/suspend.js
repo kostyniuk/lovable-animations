@@ -307,11 +307,12 @@ export default {
     // is played out in order inside the main narrative below, as its own
     // beats, so a deploy is never a silent jump-cut.
     let deployRequested = false, deployConsumed = false, deploySequenceDone = false;
+    let node2Finished = false;
     let killRequested = false, toolFailConsumed = false;
     let refusedNode = null;
 
     ctx.button('Deploy new version', () => {
-      if (deployConsumed || deployRequested) return;
+      if (deployRequested) return; // one deploy at a time; another may follow once it's done
       deployRequested = true;
     }, { title: 'Suspends the running turn at its NEXT boundary' });
 
@@ -399,7 +400,13 @@ export default {
 
       let reason = null;
       if (toolFails) reason = 'sandbox';
-      else if (deployRequested && deploySequenceDone && !deployConsumed) { reason = 'deploy'; deployConsumed = true; }
+      else if (deployRequested && deploySequenceDone) {
+        // Consumed now: clearing the flags here re-arms the button, so a click
+        // during this suspend/resume queues the next deploy (next version).
+        reason = 'deploy';
+        deployRequested = deploySequenceDone = false;
+        deployConsumed = true;
+      }
 
       if (reason) {
         current = await suspendResume(reason);
@@ -408,7 +415,9 @@ export default {
       }
     }
 
-    for (let i = 0; i < 3; i++) {
+    // Three iterations, plus a few more while a requested deploy is still
+    // waiting for a boundary (so a second deploy can happen in one play).
+    for (let i = 0; i < 3 || (deployRequested && i < 6); i++) {
       await runIteration(i);
     }
 
@@ -448,11 +457,14 @@ export default {
         await ctx.pulse(refusedNode.portAcp, nodeBottom, colorOf('revert'), 14, 380);
       }
 
-      await ctx.beat(
-        `<strong>node-2</strong>'s short turn reaches its own <span class="t t-agent">AgentDone</span> and finishes cleanly, ` +
-        `on its own trajectory — most turns simply finish during a drain.`
-      );
-      finishNode2Turn();
+      if (!node2Finished) {
+        await ctx.beat(
+          `<strong>node-2</strong>'s short turn reaches its own <span class="t t-agent">AgentDone</span> and finishes cleanly, ` +
+          `on its own trajectory — most turns simply finish during a drain.`
+        );
+        finishNode2Turn();
+        node2Finished = true;
+      }
 
       deploySequenceDone = true;
     }

@@ -15,6 +15,12 @@ const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 // lists concurrent fan-out targets the same way.
 export const listOf = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
+// The chat agent is "responsible for writing a self-contained message …
+// the builder only ever sees the message it was sent" — shown as a small
+// preview near the chat agent (2D) / following the envelope (3D) from the
+// moment it's written through delivery.
+export const MESSAGE_PREVIEW = (project) => `${project}: "add a dark-mode toggle to settings; persist per user"`;
+
 export const CHAT_CYCLE = [
   {
     id: 'user-to-inbox',
@@ -27,6 +33,18 @@ export const CHAT_CYCLE = [
   {
     id: 'user-admit',
     caption: () => 'at run start the chat agent admits it onto its trajectory (inbox · 0) and starts its turn',
+  },
+  {
+    id: 'propose',
+    caption: () => 'the chat agent iterates on it and replies with a plan — "Add a dark-mode toggle to dashboard? Confirm to build" — then its turn ends (AgentDone) and it waits',
+  },
+  {
+    id: 'confirm-inbox',
+    caption: () => "the user confirms — the confirmation lands in the chat agent's inbox (inbox · 1), and an activation wakes it",
+  },
+  {
+    id: 'confirm-admit',
+    caption: (p) => `at run start it admits the confirmation (inbox · 0) and writes a self-contained message for ${p.project} — the builder will only ever see this message`,
   },
   {
     id: 'send-message',

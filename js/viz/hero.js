@@ -1,4 +1,4 @@
-import { CHAT_CYCLE, listOf } from '../story.js';
+import { CHAT_CYCLE, listOf, MESSAGE_PREVIEW } from '../story.js';
 
 // #viz-hero — ambient overview of the whole system: a workspace-level chat
 // agent fanning work out to project builders, which boot on fleet nodes and
@@ -265,6 +265,33 @@ async function guidedTour(ctx, world) {
         tick(ctx, chatPanel, 'user');
         await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 20, 350);
         break;
+      case 'propose':
+        tick(ctx, chatPanel, 'iter');
+        await ctx.wait(380);
+        tick(ctx, chatPanel, 'content');
+        chatPanel.activity.textContent = 'proposing: "Add a dark-mode toggle to dashboard? Confirm to build"';
+        await ctx.wait(420);
+        tick(ctx, chatPanel, 'iter');
+        tick(ctx, chatPanel, 'agent'); // AgentDone — its turn ends
+        setStatus(ctx, chatPanel, 'asleep');
+        chatPanel.activity.textContent = 'waiting for confirmation';
+        break;
+      case 'confirm-inbox':
+        setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('user'), 16, 350);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 300);
+        // Woken by the activation; not yet admitted onto its trajectory.
+        setStatus(ctx, chatPanel, 'running');
+        chatPanel.activity.textContent = 'AgentStart · reading its inbox';
+        break;
+      case 'confirm-admit':
+        setInboxCount(ctx, chatPanel, 0);
+        tick(ctx, chatPanel, 'user'); // the confirmation lands on its trajectory
+        // The chat agent is responsible for writing a self-contained message —
+        // the builder only ever sees this, never the user's original words.
+        setMessageTag(ctx, world, chatCx, chat.y + chat.h + 14, MESSAGE_PREVIEW(p.label));
+        chatPanel.activity.textContent = `writing a message for ${p.label}…`;
+        break;
       case 'send-message':
         tick(ctx, chatPanel, 'tool');
         // Ends with the envelope resting in ACP — not yet in dashboard's inbox.
@@ -277,6 +304,9 @@ async function guidedTour(ctx, world) {
         await carryFromAcp(ctx, world, sendState);
         setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
         await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
+        // The message briefly shows at the builder — the only thing it sees.
+        moveMessageTag(ctx, world, p.x + p.w / 2, p.y + p.h + 14);
+        ctx.spawn(async () => { await ctx.wait(1200); if (ctx.alive) hideMessageTag(ctx, world); });
         break;
       case 'activation':
         node = await pickFreeNode(ctx, nodes);
@@ -652,6 +682,9 @@ async function runFanOut(ctx, world) {
   chatWake();
   setInboxCount(ctx, chatPanel, 0);
   tick(ctx, chatPanel, 'user');
+  // Ambient skips the confirm step (it's the idle overview), but still
+  // shows a confirmation happened before the message goes out.
+  chatPanel.activity.textContent = 'confirmed · sending';
 
   say(`chat agent calls send_message_to_project for ${listOf(chosen.map((p) => p.label))} — ACP delivers it`);
 
@@ -814,6 +847,42 @@ function envelope(ctx, color, accent) {
   ctx.el('rect', { x: -ENV_W / 2, y: -ENV_H / 2, width: ENV_W, height: ENV_H, rx: 2, fill: ctx.COLORS.panel, stroke: accent || color, 'stroke-width': 1.4 }, g);
   ctx.el('path', { d: 'M-9,-6 L0,1 L9,-6', fill: 'none', stroke: accent || color, 'stroke-width': 1.4 }, g);
   return g;
+}
+
+// ---------- message preview tag: the self-contained message the chat agent
+// writes for a builder — "the builder only ever sees the message it was
+// sent." Shown near the chat agent once it's written, then briefly near the
+// builder once delivered.
+
+function ensureMessageTag(ctx, world) {
+  if (world.messageTag) return world.messageTag;
+  const g = ctx.el('g', { opacity: 0 });
+  const bg = ctx.el('rect', { y: 0, height: 18, rx: 4, fill: ctx.COLORS.panel, stroke: ctx.COLORS.api, 'stroke-width': 1 }, g);
+  const text = ctx.el('text', {
+    x: 0, y: 9, 'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono', 'font-size': 9.5, fill: ctx.COLORS.text,
+  }, g);
+  world.messageTag = { g, bg, text };
+  return world.messageTag;
+}
+
+function setMessageTag(ctx, world, x, y, message) {
+  const tag = ensureMessageTag(ctx, world);
+  tag.text.textContent = message;
+  const w = message.length * 5.3 + 16;
+  tag.bg.setAttribute('x', -w / 2);
+  tag.bg.setAttribute('width', w);
+  ctx.setPos(tag.g, x, y);
+  ctx.fade(tag.g, 0.95, 200).catch(() => {});
+}
+
+function moveMessageTag(ctx, world, x, y) {
+  if (!world.messageTag) return;
+  ctx.move(world.messageTag.g, x, y, 380).catch(() => {});
+}
+
+function hideMessageTag(ctx, world) {
+  if (!world.messageTag) return;
+  ctx.fade(world.messageTag.g, 0, 250).catch(() => {});
 }
 
 // ACP — not the recipient — issues the activation right after the inbox

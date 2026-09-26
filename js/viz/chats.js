@@ -505,8 +505,8 @@ export default {
     // item has actually been admitted onto the trajectory — never on arrival.
     let chatRunning = false;
     let chatPending = [];
-    async function chatArrival(processFn) {
-      chatPending.push(processFn);
+    async function chatArrival(processFn, [chipLabel, chipType] = ['Notif', 'notify']) {
+      chatPending.push({ process: processFn, chipLabel, chipType });
       setChatInboxCount(chatPending.length);
       await pulseInbox(chatInboxDot);
       if (chatRunning) {
@@ -520,9 +520,12 @@ export default {
       while (chatPending.length) {
         const batch = chatPending;
         chatPending = [];
+        // Admission copies the inbox events onto the trajectory first; the
+        // iteration that acts on them starts after that copy.
         setChatInboxCount(0);
+        for (const item of batch) await chatStrip.push(item.chipLabel, item.chipType);
         await chatStrip.push('IterationStart', 'iter');
-        for (const fn of batch) await fn();
+        for (const item of batch) await item.process();
         await chatStrip.push('IterationEnd', 'iter');
       }
       await chatStrip.push('AgentDone', 'agent');
@@ -533,7 +536,6 @@ export default {
 
     // A progress update, admitted: one trajectory row, one transcript line.
     async function onProgress(st, text) {
-      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
       await addRow(text || `${st.label}: ${st.ask}`, COLORS.notify);
     }
 
@@ -550,7 +552,6 @@ export default {
     // reply in that same admitted turn — the transcript only ever shows
     // things it actually wrote, after admitting what it's summarizing.
     async function onResult(st) {
-      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
       const check = st.ok ? '✓' : '✗';
       await addRow(`${st.label} ${check} ${st.files} files · ${st.credits}cr`, st.ok ? COLORS.tool : COLORS.revert);
       resultsSeen++;
@@ -573,6 +574,7 @@ export default {
       await wakeActivation(st);
       st.statusText.textContent = 'running';
       st.statusText.setAttribute('fill', COLORS.iter);
+      await st.vStrip.push('Notif·chat', 'notify'); // admitted at run start
       await st.vStrip.push('IterationStart', 'iter');
       await st.vStrip.push('tool_call', 'tool');
     }
@@ -586,6 +588,7 @@ export default {
         }
         st.statusText.textContent = 'running';
         st.statusText.setAttribute('fill', COLORS.iter);
+        if (!resumed) await st.vStrip.push('Notif·chat', 'notify'); // admitted at run start
         await st.vStrip.push('IterationStart', 'iter');
         await ctx.wait(1000);
         await st.vStrip.push('tool_call', 'tool');
@@ -594,7 +597,7 @@ export default {
         // mid-turn progress notification, carried back up through the ACP
         if (!skipProgress) {
           await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
-          await chatArrival(() => onProgress(st));
+          await chatArrival(() => onProgress(st), [`Notif·${st.abbr}`, 'notify']);
         }
       }
 
@@ -608,7 +611,7 @@ export default {
 
       // terminal notification, carried back up through the ACP
       await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
-      await chatArrival(() => onResult(st));
+      await chatArrival(() => onResult(st), [`Notif·${st.abbr}`, 'notify']);
       return st;
     }
 
@@ -627,9 +630,9 @@ export default {
     await chatWake();
     chatStatusText.textContent = 'running';
     chatStatusText.setAttribute('fill', COLORS.iter);
-    await chatStrip.push('IterationStart', 'iter');
     setChatInboxCount(0);
     await chatStrip.push('UserMsg', 'user');
+    await chatStrip.push('IterationStart', 'iter');
 
     await ctx.beat('It thinks, then proposes a plan and asks the user to confirm before it touches any project.');
     await chatStrip.push('thinking', 'thinking');
@@ -647,9 +650,9 @@ export default {
     await chatWake();
     chatStatusText.textContent = 'running';
     chatStatusText.setAttribute('fill', COLORS.iter);
-    await chatStrip.push('IterationStart', 'iter');
     setChatInboxCount(0);
     await chatStrip.push('UserMsg', 'user');
+    await chatStrip.push('IterationStart', 'iter');
 
     await ctx.beat('It composes one <b>self-contained message</b> per project — the builder only ever sees the message it\'s sent, never the chat thread it was written from — then calls <code>send_message_to_project</code> three times in one turn.');
     await chatStrip.push('thinking', 'thinking');
@@ -689,9 +692,9 @@ export default {
 
     await ctx.beat('At its <b>next iteration boundary</b> the chat agent admits that queued update — inbox back to 0 — writes it to its trajectory, then finishes this turn and goes idle.');
     await chatStrip.push('IterationEnd', 'iter'); // closes the send-messages iteration
-    await chatStrip.push('IterationStart', 'iter'); // a fresh iteration just to admit the queued update
     setChatInboxCount(0);
-    await chatStrip.push('Notif·mkt', 'notify');
+    await chatStrip.push('Notif·mkt', 'notify'); // admitted at the boundary
+    await chatStrip.push('IterationStart', 'iter'); // the iteration that acts on it
     await addRow('marketing-site: started — reading project state', COLORS.notify);
     await chatStrip.push('IterationEnd', 'iter');
     await chatStrip.push('AgentDone', 'agent');
@@ -704,6 +707,7 @@ export default {
     // mobile-app finishes its in-flight iteration, THEN admits the queued message
     await projState['mobile-app'].vStrip.push('IterationEnd', 'iter');
     await ctx.wait(200);
+    await projState['mobile-app'].vStrip.push('Notif·chat', 'notify'); // folded in at the boundary
     projState['mobile-app'].statusText.textContent = 'admits queued msg';
     await ctx.pulse(projState['mobile-app'].anchorTop.x, projState['mobile-app'].anchorTop.y, COLORS.notify, 14, 500);
 
@@ -729,7 +733,6 @@ export default {
       const target = projState['dashboard'];
       await addBubble('Also bump the font size on the dashboard settings page', { user: true });
       await chatArrival(async () => {
-        await chatStrip.push('UserMsg', 'user');
         await chatStrip.push('thinking', 'thinking');
         await chatStrip.push(`→ ${target.abbr}`, 'tool');
         await carryEnvelope('down', 'dashboard', `SendMessage → ${target.abbr}`, 800);
@@ -739,6 +742,7 @@ export default {
         await wakeActivation(target);
         target.statusText.textContent = 'running';
         target.statusText.setAttribute('fill', COLORS.iter);
+        await target.vStrip.push('Notif·chat', 'notify'); // admitted at run start
         await target.vStrip.push('IterationStart', 'iter');
         await ctx.wait(500);
         await target.vStrip.push('tool_call', 'tool');
@@ -748,12 +752,11 @@ export default {
         target.statusText.setAttribute('fill', COLORS.tool);
         await carryEnvelope('up', 'dashboard', `NotifyParents ← ${target.abbr}`, 800);
         await chatArrival(async () => {
-          await chatStrip.push(`Notif·${target.abbr}`, 'notify');
           await addRow('dashboard ✓ 1 file · 0.3cr', COLORS.tool);
           await chatStrip.push('reply', 'content');
           await addBubble('Done — bumped the font size on dashboard settings.');
-        });
-      });
+        }, [`Notif·${target.abbr}`, 'notify']);
+      }, ['UserMsg', 'user']);
     }
   },
 };
