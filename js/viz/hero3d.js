@@ -594,14 +594,25 @@ function buildChat(ctx, scene, overlay) {
   scene.add(makeRamp(sendPoint, new THREE.Vector3(BELT_ENTRY_X, 0.5, -13), 13, COLORS.dim));
   scene.add(makeRamp(new THREE.Vector3(BELT_ENTRY_X, 0.5, 13), returnPoint, 13, COLORS.dim));
 
+  // A small inbox tray on the return side, so progress/result notifications
+  // visibly land somewhere before they're admitted — same idea as a
+  // builder's bin.
+  const binPoint = new THREE.Vector3(frontX + 9, 8, 13);
+  const bin = makeBox(15, 11, 13, COLORS.notify, 0.5, 0.1);
+  bin.position.copy(binPoint);
+  bin.position.y = 5.5;
+  scene.add(bin);
+
   const label = makeStackLabel(overlay, [
     { text: 'CHAT AGENT · WORKSPACE', opacity: 0.85 },
     { text: 'asleep' },
+    { text: '', opacity: 0 },
   ], COLORS.agent, COLORS.panel);
 
   return {
     box, light, mat: box.material,
-    x: CHAT_X, sendPoint, returnPoint,
+    x: CHAT_X, sendPoint, returnPoint, binPoint,
+    inboxPile: [],
     anchor: new THREE.Vector3(CHAT_X, h + 34, 0),
     nameLabel: label,
     status: 'asleep', inboxCount: 0,
@@ -880,23 +891,46 @@ async function admitPending(ctx, scene, builder) {
   for (const kind of kinds) tickBuilder(ctx, scene, builder, kind);
 }
 
-// ---------- message hops: sender -> ACP (drop) -> recipient, two separate hops ----------
+// The chat agent has no trajectory track to land chips on — admitting just
+// means the pending notification(s) are absorbed back into its station.
+async function admitChatPending(ctx, scene, chat) {
+  const pile = chat.inboxPile;
+  if (!pile.length) return;
+  chat.inboxPile = [];
+  updateInboxLabel(chat);
+  const target = chat.box.parent.position.clone();
+  await Promise.all(pile.map((item) => {
+    const from = item.position.clone();
+    return ctx.animate(260, (t) => {
+      item.position.lerpVectors(from, target, t);
+      item.material.opacity = 0.95 * (1 - t);
+    });
+  }));
+  for (const item of pile) scene.remove(item);
+}
 
-async function hopToBuilder(ctx, scene, world, fromAnchor, builder, kind = 'notify') {
+// ---------- message hops: sender -> ACP (drop) -> recipient, two separate hops ----------
+// Split into two steps so a guided-tour beat can hold exactly between them:
+// sendToBelt ends with the parcel resting on the belt (SendMessage/"drops
+// there"); carryToBin finishes the delivery into the recipient's bin.
+
+async function sendToBelt(ctx, scene, world, fromAnchor) {
   showAcpLabel(world, 'ACP · SendMessage');
   const parcel = makeParcel(ctx.COLORS.notify);
   world.acpCallFollow = parcel;
   scene.add(parcel);
+  const entry = new THREE.Vector3(BELT_ENTRY_X, 6, fromAnchor.z);
+  await travelPath(ctx, parcel, [fromAnchor, entry], 480);
+  if (ctx.alive) await pulse3d(ctx, scene, entry, ctx.COLORS.notify, 9, 260);
+  return parcel; // left resting on the belt; ACP label stays lit until carryToBin
+}
+
+async function carryToBin(ctx, scene, world, parcel, builder, kind = 'notify') {
   try {
-    // Hop 1: sender -> ACP — drops onto the belt at its upstream end.
-    const entry = new THREE.Vector3(BELT_ENTRY_X, 6, fromAnchor.z);
-    await travelPath(ctx, parcel, [fromAnchor, entry], 480);
     if (!ctx.alive) return;
-    await pulse3d(ctx, scene, entry, ctx.COLORS.notify, 9, 260);
-    // Hop 2: ACP carries it down the belt's own axis to the recipient.
     const onBelt = new THREE.Vector3(BELT_ENTRY_X, 6, 0);
     const carry = new THREE.Vector3(builder.x, 6, 0);
-    await travelPath(ctx, parcel, [entry, onBelt, carry, builder.binPoint], 680);
+    await travelPath(ctx, parcel, [parcel.position.clone(), onBelt, carry, builder.binPoint], 680);
     if (!ctx.alive) return;
     queueInboxMessage(ctx, scene, builder, kind);
     await pulse3d(ctx, scene, builder.binPoint, ctx.COLORS.notify, 9, 300);
@@ -906,6 +940,15 @@ async function hopToBuilder(ctx, scene, world, fromAnchor, builder, kind = 'noti
   }
 }
 
+async function hopToBuilder(ctx, scene, world, fromAnchor, builder, kind = 'notify') {
+  const parcel = await sendToBelt(ctx, scene, world, fromAnchor);
+  await carryToBin(ctx, scene, world, parcel, builder, kind);
+}
+
+// Arrivals only ever pile up in the chat agent's own inbox too — the caller
+// is responsible for an explicit, visible admitChatPending() afterwards
+// (e.g. the tour's "the chat agent admits the result" beat), so notifications
+// never vanish from the badge before their own beat says they've landed.
 async function hopToChat(ctx, scene, world, builder, kind) {
   showAcpLabel(world, 'ACP · NotifyParents');
   const color = ctx.COLORS.notify;
@@ -924,6 +967,7 @@ async function hopToChat(ctx, scene, world, builder, kind) {
     await travelPath(ctx, parcel, [drop, onBelt, exit, world.chat.returnPoint], 680);
     if (!ctx.alive) return;
     setChatStatus(ctx, world.chat, 'running');
+    queueInboxMessage(ctx, scene, world.chat, kind);
     await pulse3d(ctx, scene, world.chat.returnPoint, kind === 'agent' ? ctx.COLORS.agent : color, 9, 300);
   } finally {
     scene.remove(parcel);
@@ -1048,11 +1092,13 @@ async function guidedTour3d(ctx, scene, world) {
   await pulse3d(ctx, scene, chat.anchor, ctx.colorOf('user'), 14, 500);
 
   await ctx.beat("the chat agent calls send_message_to_project for dashboard — the envelope travels to the Agent Control Plane bar and drops there: that's SendMessage");
-  await hopToBuilder(ctx, scene, world, chat.sendPoint, p);
-  setChatStatus(ctx, chat, 'asleep');
+  // Ends with the envelope resting on the belt — not yet in dashboard's inbox.
+  const dashboardEnvelope = await sendToBelt(ctx, scene, world, chat.sendPoint);
 
   await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
-  // queued above by hopToBuilder; nothing else to animate for this beat.
+  // Its turn done, the chat agent sleeps until a notification arrives.
+  setChatStatus(ctx, chat, 'asleep');
+  await carryToBin(ctx, scene, world, dashboardEnvelope, p, 'notify');
 
   await ctx.beat("ACP publishes an activation — the yellow signal leaves the bar's bottom edge for a fleet node");
   const node = await pickFreeNode(ctx, world.nodes);
@@ -1090,6 +1136,9 @@ async function guidedTour3d(ctx, scene, world) {
   await hopToChat(ctx, scene, world, p, 'agent');
 
   await ctx.beat('the chat agent admits the result — the cycle is complete', 1400);
+  // Admits everything pending at once — the earlier progress update and the
+  // final result both land together, same batching rule as the builders.
+  await admitChatPending(ctx, scene, world.chat);
   setChatStatus(ctx, chat, 'running');
   p.busy = false;
 }
@@ -1147,5 +1196,6 @@ async function deliverToBuilder3d(ctx, scene, world, b) {
   setBuilderStatus(ctx, b, 'asleep');
   world.say(ctx, `${b.label} finishes: AgentDone closes the turn, one more notification carries the result upstream`);
   await hopToChat(ctx, scene, world, b, 'agent');
+  await admitChatPending(ctx, scene, world.chat);
   b.busy = false;
 }

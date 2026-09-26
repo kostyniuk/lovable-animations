@@ -227,11 +227,15 @@ async function guidedTour(ctx, world) {
 
   await ctx.beat("the chat agent calls send_message_to_project for dashboard — the envelope travels to the Agent Control Plane bar and drops there: that's SendMessage");
   tick(ctx, chatPanel, 'tool');
-  await viaAcp(ctx, world, p, 'down', 'SendMessage');
-  setStatus(ctx, chatPanel, 'asleep');
-  chatPanel.activity.textContent = 'idle · waiting for a message';
-
-  await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
+  // Beat 2 ends with the envelope resting in ACP; delivery is beat 3.
+  await viaAcp(ctx, world, p, 'down', 'SendMessage', undefined, {
+    between: async () => {
+      await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
+      // Its turn done, the chat agent sleeps until a notification arrives.
+      setStatus(ctx, chatPanel, 'asleep');
+      chatPanel.activity.textContent = 'idle · waiting for a message';
+    },
+  });
   setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
   await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
 
@@ -650,7 +654,9 @@ async function sendBack(ctx, world, p, kind) {
 // ACP (SendMessage / NotifyParents) and the envelope drops into ACP; then ACP,
 // as a separate step, appends it to the recipient's inbox. Agents never
 // message each other directly.
-async function viaAcp(ctx, world, p, dir, call, accent) {
+// `between` (optional) runs after the drop into ACP and before delivery —
+// the guided tour uses it to hold a beat with the envelope resting in ACP.
+async function viaAcp(ctx, world, p, dir, call, accent, { between } = {}) {
   const { COLORS } = ctx;
   const { chat, acpY, gutterX, chatLinkY, signals } = world;
   const px = p.x + p.w / 2, boxBottom = p.y + p.h, barY = acpY + ACP_H / 2;
@@ -694,6 +700,7 @@ async function viaAcp(ctx, world, p, dir, call, accent) {
     label.setAttribute('opacity', 1);
     const [dx, dy] = inbound[inbound.length - 1];
     await ctx.pulse(dx, dy, COLORS.notify, 14, 320);
+    if (between) await between();
     // Hop 2: ACP sends it on to the recipient's inbox — a separate, quicker step.
     await leg(outboundLeg, 650);
     await ctx.fade(env, 0, 160);
