@@ -405,7 +405,9 @@ export class Scene {
 
   _process() {
     for (const tm of this.timers) {
-      const t = tm.dur <= 0 ? 1 : Math.min(1, (this.clock - tm.start) / tm.dur);
+      // Compare against the deadline directly: (clock - start) / dur can land a
+      // hair under 1 for fractional durations, stranding a replay forever.
+      const t = this.clock >= tm.start + tm.dur ? 1 : Math.min(1, (this.clock - tm.start) / tm.dur);
       tm.onFrame(t);
       if (t >= 1) { this.timers.delete(tm); tm.resolve(); }
     }
