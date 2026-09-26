@@ -486,7 +486,7 @@ function showChip(ctx, node, label) {
   const lbl = ctx.el('text', { x: 16, y: 0, 'dominant-baseline': 'central', class: 'mono', 'font-size': 10, fill: ctx.colorOf('iter'), text: label }, g);
   node._chip = g;
   node._chipLabel = lbl;
-  ctx.fade(g, 1, 250);
+  ctx.fade(g, 1, 250).catch(() => {});
   ctx.spawn(async () => {
     while (ctx.alive && node._chip === g) {
       await ctx.animate(700, (t) => {
@@ -500,7 +500,7 @@ function hideChip(ctx, node) {
   if (!node._chip) return;
   const chip = node._chip;
   node._chip = null;
-  ctx.fade(chip, 0, 250).then(() => chip.remove());
+  ctx.fade(chip, 0, 250).then(() => chip.remove()).catch(() => {});
 }
 
 // Same activation style as the hero: a pulse where it leaves the bar, then a

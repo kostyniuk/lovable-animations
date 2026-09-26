@@ -41,10 +41,10 @@ const STATUS = {
 };
 
 export default {
-  ambient: true, // continuous overview, no beats to step through
   width: 900,
   height: 480,
   loop: false,
+  restartOnModeChange: true, // Auto and Step by step run entirely different scripts
   async build(ctx) {
     const { COLORS } = ctx;
     ensureGlow(ctx);
@@ -74,12 +74,15 @@ export default {
     // sending a task or admitting a notification — then falls back asleep
     // shortly after, unless a newer wake supersedes the pending sleep.
     let wakeToken = 0;
+    // The guided tour pins the chat agent's status so this timer can't
+    // flip a held frame to "asleep".
+    const chatState = { pinned: false };
     const chatWake = () => {
       setStatus(ctx, chatPanel, 'running');
       const token = ++wakeToken;
       ctx.spawn(async () => {
         await ctx.wait(1000);
-        if (ctx.alive && token === wakeToken) {
+        if (ctx.alive && token === wakeToken && !chatState.pinned) {
           setStatus(ctx, chatPanel, 'asleep');
           chatPanel.activity.textContent = 'idle · waiting for a message';
         }
@@ -143,6 +146,19 @@ export default {
     // ---------- captions ----------
     let lastSaid = 0;
     const say = (text) => { ctx.caption(text); lastSaid = ctx.now(); };
+
+    const world = { chat, chatPanel, chatWake, chatState, projects, nodes, acpY, gutterX, chatLinkY, signals, say };
+
+    ctx.button('Send a task', () => ctx.spawn(() => runFanOut(ctx, world)));
+
+    if (ctx.manual) {
+      // Step by step: a single, deterministic pass through one task cycle —
+      // same layout, visuals and helpers as Auto, just scripted and gated on
+      // ctx.beat() instead of driven by random overlapping fan-outs.
+      await guidedTour(ctx, world);
+      return;
+    }
+
     say('watching the whole system idle, waiting for work to arrive');
 
     let idleIdx = 0;
@@ -181,10 +197,6 @@ export default {
       }
     });
 
-    const world = { chat, chatPanel, chatWake, projects, nodes, acpY, gutterX, chatLinkY, signals, say };
-
-    ctx.button('Send a task', () => ctx.spawn(() => runFanOut(ctx, world)));
-
     // ambient auto-loop: keep firing overlapping fan-outs so several things
     // are always in flight at once.
     while (ctx.alive) {
@@ -193,6 +205,65 @@ export default {
     }
   },
 };
+
+// ---------- guided tour: one deterministic task cycle, beat by beat ----------
+
+async function guidedTour(ctx, world) {
+  const { chat, chatPanel, chatState, projects, nodes } = world;
+  chatState.pinned = true;
+  const p = projects.find((pr) => pr.key === 'dashboard');
+  p.busy = true;
+  const chatCx = chat.x + chat.w / 2, chatCy = chat.y + chat.h / 2;
+
+  // Statuses are set explicitly here (not via chatWake's timer) so every held
+  // frame shows a consistent state.
+  await ctx.beat('the user sends a message; it reaches the chat agent');
+  setStatus(ctx, chatPanel, 'running');
+  tick(ctx, chatPanel, 'user');
+  await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
+
+  await ctx.beat("the chat agent calls send_message_to_project for dashboard — the envelope travels to the Agent Control Plane bar and drops there: that's SendMessage");
+  tick(ctx, chatPanel, 'tool');
+  await viaAcp(ctx, world, p, 'down', 'SendMessage');
+  setStatus(ctx, chatPanel, 'asleep');
+  chatPanel.activity.textContent = 'idle · waiting for a message';
+
+  await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
+  setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
+  await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
+
+  await ctx.beat("ACP publishes an activation — the yellow signal leaves the bar's bottom edge for a fleet node");
+  const node = await pickFreeNode(ctx, nodes);
+  await sendActivation(ctx, world, p, node);
+
+  await ctx.beat(`${node.name} picks it up and lights up; it boots dashboard with its trajectory — the builder goes to running`);
+  await bootNode(ctx, world, p, node);
+  setStatus(ctx, p.panel, 'running');
+  setInboxCount(ctx, p.panel, 0);
+  p.panel.activity.textContent = 'AgentStart · admitted its inbox';
+
+  await ctx.beat('the builder iterates: IterationStart, tool_call, IterationEnd');
+  tick(ctx, p.panel, 'iter');
+  await ctx.wait(360);
+  tick(ctx, p.panel, 'tool');
+  await ctx.wait(360);
+  tick(ctx, p.panel, 'iter');
+
+  await ctx.beat("the builder posts a progress update — NotifyParents sends an envelope through ACP into the chat agent's inbox");
+  await sendBack(ctx, world, p, 'notify');
+
+  await ctx.beat('the builder finishes: AgentDone — the node goes dim, the builder goes to asleep, and a final result notification goes up via NotifyParents');
+  tick(ctx, p.panel, 'agent');
+  setNodeActive(ctx, node, null);
+  setStatus(ctx, p.panel, 'asleep');
+  p.panel.activity.textContent = 'idle · waiting for a task';
+  await sendBack(ctx, world, p, 'agent');
+
+  await ctx.beat('the chat agent admits the result — the cycle is complete', 1400);
+  setStatus(ctx, chatPanel, 'running');
+  chatPanel.activity.textContent = 'admitted a builder result';
+  p.busy = false;
+}
 
 // ---------- glow ----------
 
@@ -641,10 +712,34 @@ function envelope(ctx, color, accent) {
 // append: it's published from the control plane, a free node picks it up,
 // and only then does that node boot the agent with its trajectory.
 async function activationBolt(ctx, world, p, node) {
+  await sendActivation(ctx, world, p, node);
+  if (!ctx.alive) return;
+  await bootNode(ctx, world, p, node);
+}
+
+// A short comet — a fixed-length dash that travels once along `path` — rather
+// than a classic "draw-in" that leaves the whole path lit until it fades.
+// Several activations/boots can be in flight at once, all riding the same
+// shared bar edges; a full-length reveal from each one overlaps the others
+// and reads as one long merged line, so only a short traveling segment is
+// ever actually visible at a time.
+async function sweep(ctx, path, { ms = 380, dashLen = 34 } = {}) {
+  const L = path.getTotalLength();
+  const margin = dashLen;
+  path.setAttribute('stroke-dasharray', `${dashLen} ${L + dashLen * 2}`);
+  const from = dashLen + margin, to = -(L + margin);
+  await ctx.animate(ms, (t) => {
+    path.setAttribute('stroke-dashoffset', from + (to - from) * t);
+  }, ctx.ease.linear);
+}
+
+// ACP publishes the activation from the bar's bottom edge (the side facing
+// the fleet); a free node picks it up.
+async function sendActivation(ctx, world, p, node) {
   const { COLORS } = ctx;
   const px = p.x + p.w / 2;
-  // Ride exactly on the bar's bottom edge (the side facing the fleet), so the
-  // signal never crosses the "AGENT CONTROL PLANE" label.
+  // Ride exactly on the bar's bottom edge, so the signal never crosses the
+  // "AGENT CONTROL PLANE" label.
   const barY = world.acpY + ACP_H;
   const toX = node.x, toY = node.y;
 
@@ -653,20 +748,24 @@ async function activationBolt(ctx, world, p, node) {
     d: `M${px},${barY} L${toX},${barY} L${toX},${toY}`,
     fill: 'none', stroke: COLORS.activation, 'stroke-width': 2, opacity: 0.9,
   }, world.signals);
-  await ctx.draw(bolt, 340);
-  await ctx.fade(bolt, 0, 180);
+  await sweep(ctx, bolt, { ms: 340, dashLen: 34 });
   bolt.remove();
+}
+
+// The node boots the agent: its run attaches to the agent's trajectory.
+async function bootNode(ctx, world, p, node) {
+  const { COLORS } = ctx;
+  const px = p.x + p.w / 2;
+  const toX = node.x, toY = node.y;
   if (!ctx.alive) return;
   setNodeActive(ctx, node, p); // the node has picked up the activation
 
-  // The node boots the agent: its run attaches to the agent's trajectory.
   const boot = ctx.el('path', {
     // Rides the bar's top edge (the side facing the agents).
     d: `M${toX},${toY} L${toX},${world.acpY} L${px},${world.acpY} L${px},${p.y + p.h}`,
-    fill: 'none', stroke: COLORS.iter, 'stroke-width': 2, 'stroke-dasharray': '4 3', opacity: 1,
+    fill: 'none', stroke: COLORS.iter, 'stroke-width': 2, opacity: 1,
   }, world.signals);
-  await ctx.draw(boot, 380);
-  await ctx.fade(boot, 0, 200);
+  await sweep(ctx, boot, { ms: 380, dashLen: 30 });
   boot.remove();
 }
 

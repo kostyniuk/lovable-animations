@@ -298,7 +298,7 @@ export default {
       return p;
     }
 
-    ctx.pulse(forkPoint.x, forkPoint.y, COLORS.fork, 24, 800);
+    ctx.pulse(forkPoint.x, forkPoint.y, COLORS.fork, 24, 800).catch(() => {});
     await ctx.beat(
       'Highlighting a boundary and forking: a new lane appears, and a pink ' +
       '<span class="t t-fork">ThreadForkConfig</span> lands with its parent arrow pointing straight ' +

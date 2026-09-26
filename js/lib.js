@@ -298,6 +298,7 @@ export class Scene {
     this.userPaused = false;
     this.stepMode = false;
     this.stepResolve = null;
+    delete this.figure.dataset.held;
     this.clock = 0;
     this.timers = new Set();
     this.ff = false;       // fast-forwarding towards ffTarget
@@ -455,6 +456,10 @@ export class Scene {
     this.manual = on;
     saveMode(this);
     this._applyMode();
+    // Some figures run an entirely different script per mode (not just a
+    // pause/no-pause difference at the same beats) — restart so the build
+    // picks the right one via ctx.manual.
+    if (this.def.restartOnModeChange) this.reset(false);
   }
   // Sync controls and playback with this figure's mode.
   _applyMode() {
@@ -516,6 +521,8 @@ export class Scene {
       .then(() => this.def.build(ctx))
       .then(async () => {
         if (gen !== this.gen) return;
+        // Hold on the final beat's finished result before looping.
+        if (this.beatIndex > 0) await this._holdPoint(gen);
         if (this.def.loop === false) return;
         await ctx.wait(2200);
         if (gen === this.gen) this._run({ replay: false });
@@ -537,6 +544,32 @@ export class Scene {
       this._process();
     }
     if (gen === this.gen && this.ff) { this.ff = false; this.pause(); }
+  }
+
+  // Where stepping stops: after a beat's animation has finished. Also where a
+  // step-back replay lands once it reaches its target beat.
+  async _holdPoint(gen) {
+    const landing = this.ff && this.beatIndex >= this.ffTarget;
+    if (landing || (this.stepMode && !this.ff)) {
+      // Let fire-and-forget transitions (fades, badges) finish so the held
+      // frame never freezes mid-fade. During a step-back replay this resolves
+      // instantly, before landing.
+      await this._schedule(gen, 320, () => {});
+    }
+    if (landing) {
+      this.ff = false;
+      this.clicks = this.clicks.filter((c) => c.at <= this.clock);
+      this.stepMode = true;
+      this.pause();
+    }
+    if (this.stepMode && !this.ff) {
+      this.paused = true;
+      this._syncStepLabel(false);
+      this.figure.dataset.held = '';  // marks "holding at a beat" (styling/tests)
+      await new Promise((r) => { this.stepResolve = r; });
+      delete this.figure.dataset.held;
+      if (gen !== this.gen) throw CANCEL;
+    }
   }
 
   _syncBack() {
@@ -566,6 +599,10 @@ export class Scene {
       colorOf,
 
       get alive() { return gen === scene.gen; },
+      // Read-only: whether this figure is in Step-by-step mode. Lets a build
+      // that needs a wholly different script per mode (not just pausing at
+      // the same beats) branch once, up front.
+      get manual() { return scene.manual; },
 
       // Seeded randomness and virtual time: use these instead of
       // Math.random / performance.now so step-back replays match.
@@ -628,24 +665,15 @@ export class Scene {
 
       // A narrative checkpoint: sets the caption, holds in step mode,
       // then lingers `hold` ms so the reader can take it in.
+      // A narrative beat: the caption describes what plays until the next
+      // beat. Steps hold just before the next caption, so a held frame always
+      // shows a caption together with its finished result.
       beat: async (html, hold = 900) => {
         alive();
+        if (scene.beatIndex > 0) await scene._holdPoint(gen);
         scene.beatIndex++;
         setCaption(scene.captionEl, html);
         scene._syncBack();
-        if (scene.ff && scene.beatIndex >= scene.ffTarget) {
-          // Arrived at the step-back target: stop replaying and hold here.
-          scene.ff = false;
-          scene.clicks = scene.clicks.filter((c) => c.at <= scene.clock);
-          scene.stepMode = true;
-          scene.pause();
-        }
-        if (scene.stepMode && !scene.ff) {
-          scene.paused = true;
-          scene._syncStepLabel(false);
-          await new Promise((r) => { scene.stepResolve = r; });
-          alive();
-        }
         await ctx.wait(hold);
       },
 
