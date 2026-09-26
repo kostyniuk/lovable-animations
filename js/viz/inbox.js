@@ -131,7 +131,13 @@ export default {
     // ================= state =================
     // agentActive: true between AgentStart and AgentDone. Drives whether an
     // activation actually starts a run or is just acknowledged and dropped.
-    const state = { inbox: [], traj: [], agentActive: false };
+    // waking: true from the instant an idle-wake activation is claimed until
+    // its AgentStart pill is appended and pending messages are admitted —
+    // covers agentActive's own startup window so nothing else (e.g. the
+    // sandbox loop below) can act on the new run before it's actually there,
+    // and so a second activation arriving in that window sees the agent as
+    // busy rather than racing to start its own run.
+    const state = { inbox: [], traj: [], agentActive: false, waking: false };
     // Serializes every inbox mutation (sends + admits) so simultaneous
     // button clicks can't race each other's reflow animations; the
     // trajectory gets its own lock for trims/reflows.
@@ -189,15 +195,24 @@ export default {
       return ctx.eventPill({ x, y, w, h, name: kind, label: label || kind }, parent);
     }
 
-    // ACP sending an activation onward to the agent, after the durable
-    // inbox append. If the agent is idle this is what actually starts a new
-    // run; if it's already running, the activation is just acknowledged and
-    // dropped — the running agent will pick the message up at its next
-    // iteration boundary regardless. Like the hero: it leaves from ACP's
-    // bottom edge and is drawn as a yellow orthogonal bolt — down, under the
-    // inbox, up the gutter, into the trajectory's left edge just below the
-    // lock row, so it never crosses a card or label.
+    // ACP sending an activation onward to the agent. Every send that goes
+    // through ACP fires this in the same beat as the inbox append — nobody
+    // waits for a later tick to notice the message and decide to activate.
+    // If the agent is idle this is what actually starts a new run — the run
+    // then admits whatever is pending at run start; if it's already
+    // running, the activation is just acknowledged and dropped — the
+    // running agent will pick the message up at its next iteration boundary
+    // regardless. Like the hero: it leaves from ACP's bottom edge and is
+    // drawn as a yellow orthogonal bolt — down, under the inbox, up the
+    // gutter, into the trajectory's left edge just below the lock row, so it
+    // never crosses a card or label.
     async function activateAgent() {
+      // Claim the wake synchronously, before any animation frame runs, so a
+      // second activation arriving in the same instant — or arriving while
+      // this one's AgentStart/admit is still in flight — sees the agent as
+      // already (about to be) running rather than racing to start its own.
+      const waking = !state.agentActive && !state.waking;
+      if (waking) state.waking = true;
       const sx = ACP_CX, sy = ACP_Y + ACP_H;
       await flashAcp(COLORS.activation, 380);
       const bolt = ctx.el('path', {
@@ -206,7 +221,7 @@ export default {
       }, root);
       try {
         await ctx.draw(bolt, 560);
-        if (state.agentActive) {
+        if (!waking) {
           const ack = ctx.el('text', {
             x: TRAJ_X + 24, y: ACT_Y, class: 'mono', 'font-size': 9.5, fill: COLORS.muted,
             'dominant-baseline': 'central', text: 'already running · ack',
@@ -217,6 +232,13 @@ export default {
           ack.remove();
         } else {
           await Promise.all([ctx.pulse(TRAJ_X, ACT_Y, COLORS.activation, 16, 420), ctx.fade(bolt, 0, 300)]);
+          // The activation woke an idle agent: a fresh run starts right now
+          // and admits whatever is pending at run start. `waking` stays true
+          // until this is fully done, so nothing downstream (the sandbox
+          // loop) can act on the new run before it actually exists.
+          const woken = await appendAgentPill('AgentStart');
+          await admitPending(woken);
+          state.waking = false;
         }
       } finally {
         bolt.remove();
@@ -252,7 +274,9 @@ export default {
     // from a spawned button handler or inline from the scripted sequence.
     // Only the append itself holds the inbox lock, so several envelopes can
     // be in flight at once (like the hero) without queueing behind each other.
-    async function sendMessage(actorKey, labelOverride) {
+    // `autoActivate: false` is only for the scripted intro's very first
+    // message, where the following beats stage the run start by hand.
+    async function sendMessage(actorKey, labelOverride, { autoActivate = true } = {}) {
       const a = ACTORS[actorKey];
       const color = colorOf(a.color);
       const cy = actorCY(a);
@@ -299,10 +323,11 @@ export default {
         const entry = { node: card, statusEl, handled: false, kind: a.kind, tag: a.tag };
         state.inbox.push(entry);
         await ctx.fade(card, 1, 240);
-        // The append is the durable step; ACP also sends an activation. If
-        // the agent is already running it's just acknowledged and dropped —
-        // the idle-wake case is driven explicitly by the sandbox loop below.
-        if (state.agentActive) ctx.spawn(() => activateAgent());
+        // The append is the durable step; every send is followed by an
+        // activation (always drawn from the ACP pill, even for UserMessages,
+        // which land in the inbox without an ACP hop). It wakes an idle agent,
+        // or is acked and dropped against a running one.
+        if (autoActivate) ctx.spawn(() => activateAgent());
         return entry;
       });
     }
@@ -482,7 +507,9 @@ export default {
       'The <b>trajectory</b> is what it actually thought, said and did.'
     );
 
-    await sendMessage('user');
+    // Suppress the automatic idle-wake activation here: the next two beats
+    // stage that exact run start by hand, with their own captions.
+    await sendMessage('user', undefined, { autoActivate: false });
     await ctx.beat('The user\'s <span class="t t-user">UserMessage</span> always lands in the inbox first — never straight onto the trajectory.');
 
     let run = await appendAgentPill('AgentStart');
@@ -522,9 +549,11 @@ export default {
 
     await appendAgentPill('AgentDone');
     await ctx.beat(
-      'Now it\'s an interactive sandbox: use the buttons any time. The agent doesn\'t watch its own ' +
-      'inbox — ACP does. If it\'s idle, ACP sends an activation and a fresh ' +
-      '<span class="t t-agent">AgentStart</span> picks the message up.'
+      'Now it\'s an interactive sandbox: use the buttons any time. Nobody polls: every send is an ' +
+      'append plus an activation, together, at send time. If the agent is idle that activation wakes ' +
+      'it — a fresh <span class="t t-agent">AgentStart</span> admits the message at run start. If ' +
+      'it\'s already running, the activation is just acked, and the message waits for the next ' +
+      'iteration boundary.'
     );
 
     // ================= autonomous sandbox loop =================
@@ -532,13 +561,15 @@ export default {
     let running = false;
     while (ctx.alive) {
       if (!running) {
-        ctx.caption('Agent idle (AgentDone) — nothing runs until ACP sends an activation.');
-        while (ctx.alive && !state.inbox.some((c) => !c.handled)) await ctx.wait(200);
+        ctx.caption('Agent idle (AgentDone) — nothing runs until an activation wakes it.');
+        // The append + activation already happened inside sendMessage →
+        // activateAgent, at send time — this only waits for that wake to
+        // fully land (AgentStart appended, pending admitted — state.waking
+        // back to false) before animating the run it just started.
+        while (ctx.alive && !(state.agentActive && !state.waking)) await ctx.wait(150);
         if (!ctx.alive) break;
-        await activateAgent();
-        run = await appendAgentPill('AgentStart');
-        ctx.caption('ACP sends an activation — a new run starts and admits the message at run start.');
-        await admitPending(run);
+        ctx.caption('An activation arrived while idle: a new run starts and admits the message at run start.');
+        await ctx.wait(500);
         running = true;
         idleStreak = 0;
       }

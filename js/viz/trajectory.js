@@ -17,14 +17,16 @@ const RING_R = 11.5;   // boundary node: dashed r=11 ring + half its 1px stroke
 const LABEL_DY = 20;   // label center sits this far above/below the node center
 const edgeR = (boundary) => (boundary ? RING_R : NODE_R);
 
+// Row A ends on ToolApprovalRequired — conditional, but drawn every time in
+// this demo so the wrap into row B always lands on ToolExecutionStart.
 const ROW_A = [
   ['UserMessage', false], ['AgentStart', false], ['IterationStart', false],
   ['thinking', false], ['tool_call', false], ['ToolParametersValidated', false],
-  ['ToolExecutionStart', false],
+  ['ToolApprovalRequired', false],
 ];
 const ROW_B = [
-  ['ToolExecutionEnd', false], ['IterationEnd', true], ['IterationStart', false],
-  ['content', false], ['IterationEnd', true], ['AgentDone', true],
+  ['ToolExecutionStart', false], ['ToolExecutionEnd', false], ['IterationEnd', true],
+  ['IterationStart', false], ['content', false], ['IterationEnd', true], ['AgentDone', true],
 ];
 
 export default {
@@ -182,17 +184,19 @@ export default {
       }
     }
     async function appendEventBody() {
-      if (extCount >= 3) {
+      // Column 0 of this row is already spoken for by the scripted revert,
+      // which also did the one-time wrap-down through EXT_GUTTER_Y — every
+      // interactive append after it just continues along the same row.
+      if (extCount >= 4) {
         await ctx.pulse(extTip.x, extTip.y, COLORS.muted, 18, 500);
         ctx.caption('Cap reached for this demo — hit Reset to try more appends.');
         return;
       }
-      const name = EXT_PATTERN[extCount % EXT_PATTERN.length];
+      const name = EXT_PATTERN[(extCount - 1) % EXT_PATTERN.length];
       const boundary = name === 'IterationEnd';
       const x = COL_X[extCount], y = EXT_Y;
       const ev = await addEvent({
         x, y, name, boundary, parent: extTip, above: false, head: mainHead,
-        gutter: extCount === 0 ? EXT_GUTTER_Y : null, // wrap down like the main row does
       });
       extTip = { x, y, ev };
       if (boundary) lastBoundaryMain = extTip;
@@ -248,9 +252,28 @@ export default {
           'and the tool lifecycle all append in order.'
         );
       }
+      if (i === 5) {
+        await ctx.beat(
+          'When a human has to weigh in, <span class="t t-tool">ToolApprovalRequired</span> is appended ' +
+          'too — and waits for approval before the tool runs.'
+        );
+      }
     }
 
+    // A brief human-approval moment: not its own log entry, just a check
+    // that stays up through the row-wrap hold, then clears as execution
+    // begins (ToolExecutionStart, first thing in row B below).
+    const approvalTip = prev;
+    await ctx.wait(300);
+    const approvedTag = ctx.el('text', {
+      x: approvalTip.x, y: approvalTip.y + LABEL_DY, class: 'mono', 'font-size': 10,
+      'text-anchor': 'middle', 'dominant-baseline': 'central', fill: COLORS.tool, opacity: 0, text: 'approved ✓',
+    }, root);
+    await ctx.fade(approvedTag, 1, 250);
+
     await ctx.beat('The row is full — the same lane just continues, wrapping down.');
+    await ctx.fade(approvedTag, 0, 250);
+    approvedTag.remove();
     for (let i = 0; i < ROW_B.length; i++) {
       const [name, boundary] = ROW_B[i];
       const x = COL_X[i], y = ROW_B_Y;
@@ -260,7 +283,8 @@ export default {
       });
       prev = { x, y, ev };
     }
-    const forkPoint = { x: COL_X[1], y: ROW_B_Y, ev: events.find((e) => e.name === 'IterationEnd') };
+    const forkPointEv = events.find((e) => e.name === 'IterationEnd');
+    const forkPoint = { x: forkPointEv.x, y: forkPointEv.y, ev: forkPointEv };
     lastBoundaryMain = prev;
     let mainTip = prev; // true tip of main, boundary or not
 
@@ -355,12 +379,15 @@ export default {
     strike.remove();
 
     // ---------- revert ----------
-    const revertX = COL_X[6];
+    // Row B is full (AgentDone sits in its last column), so the revert wraps
+    // down into the append row — the same lane, same elbow-through-the-gutter
+    // move used for every other row wrap.
     const revertEv = await addEvent({
-      x: revertX, y: ROW_B_Y, name: 'Revert', boundary: false, parent: mainTip,
-      above: true, head: mainHead,
+      x: COL_X[0], y: EXT_Y, name: 'Revert', boundary: false, parent: mainTip,
+      above: false, head: mainHead, gutter: EXT_GUTTER_Y,
     });
-    mainTip = { x: revertX, y: ROW_B_Y, ev: revertEv };
+    mainTip = { x: COL_X[0], y: EXT_Y, ev: revertEv };
+    extCount = 1; // column 0 of the append row is taken by the revert above
     // Revert is not a boundary — lastBoundaryMain stays put at AgentDone,
     // since only IterationEnd/AgentDone are legal fork points.
     await ctx.beat('Even a revert is just another appended event — <span class="t t-revert">Revert</span>. Nothing before it is deleted.');

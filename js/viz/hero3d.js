@@ -6,6 +6,7 @@
 // the node to its station. Built alongside the 2D hero, not instead of it.
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+import { CHAT_CYCLE, listOf } from '../story.js';
 
 // ---------- world layout (all in "world units", independent of pixels) ----------
 const BELT_LEN = 320, BELT_W = 46;
@@ -49,9 +50,6 @@ const IDLE_CAPTIONS = [
   'a builder only admits its inbox at run start and at iteration boundaries — a mid-run message waits',
   'progress and results ride back the same way: through ACP, into the chat agent’s inbox',
 ];
-
-// 'a', 'a and b', 'a, b and c'
-const listOf = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 export default {
   width: 900,
@@ -871,7 +869,10 @@ function pileOffset(i) {
 
 function queueInboxMessage(ctx, scene, builder, kind = 'notify') {
   const { x, y } = pileOffset(builder.inboxPile.length);
-  const item = makeParcel(ctx.COLORS.notify, 7, 5, 7, kind === 'agent' ? ctx.COLORS.agent : null);
+  // UserMessage gets its own color family; a result still rides in cyan
+  // (still an ExternalAgentNotification envelope) with an added purple band.
+  const baseColor = kind === 'user' ? ctx.colorOf('user') : ctx.COLORS.notify;
+  const item = makeParcel(baseColor, 7, 5, 7, kind === 'agent' ? ctx.COLORS.agent : null);
   item.material.transparent = true;
   item.material.opacity = 0;
   item.userData.kind = kind;
@@ -1117,92 +1118,110 @@ function shuffle(ctx, arr) {
 }
 
 // ---------- guided tour: one deterministic task cycle, beat by beat ----------
-// 16 beats. Beats 1, 3-6, 8 keep hero.js's guidedTour captions verbatim.
-// Beats 7-8 dramatize the article's batching rule ("this happens at the
-// start of a run and again at every iteration boundary"). Every downward
-// (SendMessage) and upward (NotifyParents) delivery is its own two-beat
-// hop — one beat ends with the envelope resting on the belt in ACP, the
-// next ends with it admitted into the recipient's inbox — so a held frame
-// never shows a later beat's state early. The chat agent never batches: a
-// notification just sits in its inbox until a dedicated pair of beats has
-// it wake, admit at run start, iterate, and AgentDone — its own short turn,
-// same shape as a builder's, once for the progress update and once for the
-// final result.
+// Captions and beat order live in js/story.js (CHAT_CYCLE), shared verbatim
+// with hero.js's guidedTour — this function only supplies the 3D visual
+// action per beat id. Every downward (SendMessage) and upward (NotifyParents)
+// delivery is its own two-beat hop — one beat ends with the envelope resting
+// on the belt in ACP, the next ends with it admitted into the recipient's
+// inbox — so a held frame never shows a later beat's state early. Likewise
+// the user's opening message lands in the inbox first, is woken by its own
+// activation, and is only then admitted onto the trajectory at run start.
+// The chat agent never batches: each notification gets its own short
+// wake/admit/iterate/AgentDone turn, same shape as a builder's.
 
 async function guidedTour3d(ctx, scene, world) {
   const p = world.builders.find((b) => b.key === 'dashboard');
   p.busy = true;
   const chat = world.chat;
+  const params = { project: p.label, node: '' };
+  let node = null;
+  let dashboardEnvelope = null, progressEnvelope = null, resultEnvelope = null;
 
-  await ctx.beat('the user sends a message; it reaches the chat agent');
-  setChatStatus(ctx, chat, 'running');
-  await pulse3d(ctx, scene, chat.anchor, ctx.colorOf('user'), 14, 500);
-
-  await ctx.beat("the chat agent calls send_message_to_project for dashboard — the envelope travels to the Agent Control Plane bar and drops there: that's SendMessage");
-  // Ends with the envelope resting on the belt — not yet in dashboard's inbox.
-  const dashboardEnvelope = await sendToBelt(ctx, scene, world, chat.sendPoint);
-
-  await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
-  // Its turn done, the chat agent sleeps until a notification arrives.
-  setChatStatus(ctx, chat, 'asleep');
-  await carryToBin(ctx, scene, world, dashboardEnvelope, p, 'notify');
-
-  await ctx.beat("ACP publishes an activation — the yellow signal leaves the bar's bottom edge for a fleet node");
-  const node = await pickFreeNode(ctx, world.nodes);
-  await activationToNode(ctx, scene, p, node);
-
-  await ctx.beat(`${node.name} picks it up and lights up; it boots dashboard with its trajectory — the builder goes to running`);
-  setNodeActive(ctx, node, p);
-  await bootBeam3d(ctx, scene, node, p);
-  setBuilderStatus(ctx, p, 'running');
-  await admitPending(ctx, scene, p); // run start: whatever was pending is admitted
-
-  await ctx.beat('the builder iterates: IterationStart, tool_call, IterationEnd');
-  tickBuilder(ctx, scene, p, 'iter');
-  await ctx.wait(360);
-  tickBuilder(ctx, scene, p, 'tool');
-  await ctx.wait(360);
-  tickBuilder(ctx, scene, p, 'iter');
-  await admitPending(ctx, scene, p); // no-op here — nothing arrived yet
-
-  await ctx.beat('while dashboard is mid-iteration, two more messages arrive via ACP — they wait in its inbox (inbox · 2)');
-  await hopToBuilder(ctx, scene, world, chat.sendPoint, p);
-  await hopToBuilder(ctx, scene, world, chat.sendPoint, p);
-
-  await ctx.beat("IterationEnd — at the boundary, dashboard admits everything pending at once: both land on its trajectory together; inbox · 0");
-  tickBuilder(ctx, scene, p, 'iter');
-  await admitPending(ctx, scene, p);
-
-  await ctx.beat('the builder posts a progress update — NotifyParents drops an ExternalAgentNotification into ACP');
-  // Ends with the progress envelope resting on the belt — not yet in chat's inbox.
-  const progressEnvelope = await sendToBeltFromBuilder(ctx, scene, world, p, 'notify');
-
-  await ctx.beat('ACP appends it to the chat agent’s inbox and sends an activation (inbox · 1)');
-  // Ends with the notification sitting in chat's bin — chat is still asleep.
-  await carryToChat(ctx, scene, world, progressEnvelope, 'notify');
-
-  await ctx.beat('the chat agent wakes: at run start it admits the update onto its trajectory (inbox · 0) and iterates on it — relaying the progress to the user');
-  // The builder keeps iterating meanwhile, so it's clear the two run independently.
-  await chatWakeAndRun(ctx, scene, world, p);
-
-  await ctx.beat('its turn ends — AgentDone, and the chat agent goes idle again');
-  await chatFinishTurn(ctx, scene, world);
-
-  await ctx.beat('the builder finishes: AgentDone — the node goes dim, the builder goes to asleep, and NotifyParents drops the result into ACP');
-  tickBuilder(ctx, scene, p, 'agent');
-  setNodeActive(ctx, node, null);
-  setBuilderStatus(ctx, p, 'asleep');
-  // Ends with the result envelope resting on the belt — chat's inbox still 0.
-  const resultEnvelope = await sendToBeltFromBuilder(ctx, scene, world, p, 'agent');
-
-  await ctx.beat('ACP appends the result to the chat agent’s inbox and sends an activation (inbox · 1)');
-  await carryToChat(ctx, scene, world, resultEnvelope, 'agent');
-
-  await ctx.beat('the chat agent wakes, admits the result at run start (inbox · 0), and iterates — summarizing the result for the user');
-  await chatWakeAndRun(ctx, scene, world);
-
-  await ctx.beat('AgentDone — the chat agent goes idle; the cycle is complete', 1400);
-  await chatFinishTurn(ctx, scene, world);
+  for (const beat of CHAT_CYCLE) {
+    await ctx.beat(beat.caption(params), beat.id === 'chat-result-done' ? 1400 : undefined);
+    switch (beat.id) {
+      case 'user-to-inbox':
+        queueInboxMessage(ctx, scene, chat, 'user');
+        await pulse3d(ctx, scene, chat.anchor, ctx.colorOf('user'), 14, 400);
+        break;
+      case 'user-activation':
+        await pulse3d(ctx, scene, chat.anchor, ctx.COLORS.activation, 14, 350);
+        // Woken: the run has started, the message is still pending in the inbox.
+        setChatStatus(ctx, chat, 'running');
+        break;
+      case 'user-admit':
+        setChatStatus(ctx, chat, 'running');
+        await admitPending(ctx, scene, chat);
+        break;
+      case 'send-message':
+        // Ends with the envelope resting on the belt — not yet in dashboard's inbox.
+        dashboardEnvelope = await sendToBelt(ctx, scene, world, chat.sendPoint);
+        break;
+      case 'inbox-append':
+        // Its turn done, the chat agent sleeps until a notification arrives.
+        setChatStatus(ctx, chat, 'asleep');
+        await carryToBin(ctx, scene, world, dashboardEnvelope, p, 'notify');
+        break;
+      case 'activation':
+        node = await pickFreeNode(ctx, world.nodes);
+        params.node = node.name;
+        await activationToNode(ctx, scene, p, node);
+        break;
+      case 'boot':
+        setNodeActive(ctx, node, p);
+        await bootBeam3d(ctx, scene, node, p);
+        setBuilderStatus(ctx, p, 'running');
+        await admitPending(ctx, scene, p); // run start: whatever was pending is admitted
+        break;
+      case 'iterate':
+        tickBuilder(ctx, scene, p, 'iter');
+        await ctx.wait(360);
+        tickBuilder(ctx, scene, p, 'tool');
+        await ctx.wait(360);
+        tickBuilder(ctx, scene, p, 'iter');
+        await admitPending(ctx, scene, p); // no-op here — nothing arrived yet
+        break;
+      case 'interject':
+        await hopToBuilder(ctx, scene, world, chat.sendPoint, p);
+        await hopToBuilder(ctx, scene, world, chat.sendPoint, p);
+        break;
+      case 'batch-admit':
+        tickBuilder(ctx, scene, p, 'iter');
+        await admitPending(ctx, scene, p);
+        break;
+      case 'progress-drop':
+        // Ends with the progress envelope resting on the belt — not yet in chat's inbox.
+        progressEnvelope = await sendToBeltFromBuilder(ctx, scene, world, p, 'notify');
+        break;
+      case 'progress-inbox':
+        // Ends with the notification sitting in chat's bin — chat is still asleep.
+        await carryToChat(ctx, scene, world, progressEnvelope, 'notify');
+        break;
+      case 'chat-progress-turn':
+        // The builder keeps iterating meanwhile, so it's clear the two run independently.
+        await chatWakeAndRun(ctx, scene, world, p);
+        break;
+      case 'chat-progress-done':
+        await chatFinishTurn(ctx, scene, world);
+        break;
+      case 'result-drop':
+        tickBuilder(ctx, scene, p, 'agent');
+        setNodeActive(ctx, node, null);
+        setBuilderStatus(ctx, p, 'asleep');
+        // Ends with the result envelope resting on the belt — chat's inbox still 0.
+        resultEnvelope = await sendToBeltFromBuilder(ctx, scene, world, p, 'agent');
+        break;
+      case 'result-inbox':
+        await carryToChat(ctx, scene, world, resultEnvelope, 'agent');
+        break;
+      case 'chat-result-turn':
+        await chatWakeAndRun(ctx, scene, world);
+        break;
+      case 'chat-result-done':
+        await chatFinishTurn(ctx, scene, world);
+        break;
+    }
+  }
   p.busy = false;
 }
 
@@ -1214,8 +1233,14 @@ async function runFanOut3d(ctx, scene, world) {
   if (!chosen.length) return;
   chosen.forEach((b) => { b.busy = true; });
 
+  // The user's message lands in the inbox, wakes the chat agent via its own
+  // activation, and is only then admitted onto the trajectory at run start —
+  // same three-step opening as the guided tour, not a direct trajectory tick.
+  queueInboxMessage(ctx, scene, world.chat, 'user');
+  await pulse3d(ctx, scene, world.chat.anchor, ctx.colorOf('user'), 14, 350);
+  await pulse3d(ctx, scene, world.chat.anchor, ctx.COLORS.activation, 14, 300);
   setChatStatus(ctx, world.chat, 'running');
-  await pulse3d(ctx, scene, world.chat.anchor, ctx.colorOf('user'), 14, 450);
+  await admitPending(ctx, scene, world.chat);
   world.say(ctx, `chat agent calls send_message_to_project for ${listOf(chosen.map((b) => b.label))} — ACP delivers it`);
 
   await Promise.all(chosen.map((b) => deliverToBuilder3d(ctx, scene, world, b)));

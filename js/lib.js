@@ -61,7 +61,7 @@ export const colorOf = (typeOrName) =>
 // the narration is easy to scan. Events use their family color; ACP calls,
 // tools and streaming messages share one accent.
 const API_NAMES = ['SpawnAgent', 'ForkAndSendMessage', 'SendMessage', 'NotifyParents', 'StopAgent',
-  'send_message_to_project', 'PartialOpened', 'PartialDelta'];
+  'send_message_to_project', 'PartialOpened', 'PartialDelta', 'PartialDeltas'];
 const NAME_COLOR = {
   ...Object.fromEntries(Object.keys(EVENT_TYPE).map((n) => [n, COLORS[EVENT_TYPE[n]]])),
   ...Object.fromEntries(API_NAMES.map((n) => [n, COLORS.api])),

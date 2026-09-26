@@ -429,7 +429,7 @@ export default {
     }
 
     await ctx.beat(
-      'As tokens stream in, the agent pushes <span class="mono">PartialDelta</span> chips — small edits, ' +
+      'As tokens stream in, the agent pushes <span class="mono">PartialDeltas</span> — small edits, ' +
       '"append this text". The trajectory lane below does <strong>not</strong> change.'
     );
     for (const w of THINK_WORDS) {

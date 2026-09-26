@@ -8,18 +8,32 @@
 // to the sandbox (or rebuilds it from the repo), and keeps writing to the
 // same trajectory as if nothing happened.
 //
+// A deploy doesn't just suspend one run: "each node stops accepting new
+// activations and lets its in-flight runs drain" — most turns simply
+// finish, only a run that's still going suspends at its next boundary. So
+// this figure narrates the WHOLE drain, in order: nodes close to new work,
+// a short turn on node-2 visibly finishes on its own small trajectory, and
+// only then does the long turn on node-1 hit its boundary and suspend.
+//
 // The trajectory lane is the hero of this figure: big pills, a live
 // connector line running from whichever node currently owns the turn down
 // to the exact pill it's about to extend, and a glowing bracket marking the
 // still-open agent block. Suspend snaps the connector; resume re-attaches a
-// fresh one from the new node to the very same tip.
+// fresh one from the new node to the very same tip. A small second lane
+// above it holds node-2's own short trajectory.
+//
+// Engine note: in step mode a beat's held frame shows the DOM state produced
+// by the code that runs right after that beat() call (the next beat call is
+// what triggers the pause). So every beat below is written "beat(caption);
+// then do the thing" — never action-then-caption — so each held frame
+// matches its own words.
 
 // Seeded per run (ctx.random) so step-back replays make the same choices.
 let rand = Math.random;
 
 export default {
   width: 900,
-  height: 314,
+  height: 340,
   async build(ctx) {
     rand = ctx.random;
     const { COLORS, colorOf } = ctx;
@@ -43,11 +57,16 @@ export default {
     // centre columns, so the node->trajectory connectors drop past its ends.
     const ACP_H = 18, acpW = 170;
     const acp = { x: 400 - acpW / 2, y: nodeBottom + 30, w: acpW, h: ACP_H };
+    // A small second lane for node-2's own short turn: it finishes on its
+    // own trajectory tip, visibly, before the long turn ever suspends.
+    const miniLabelY = acp.y + acp.h + 10;
+    const miniRowY = miniLabelY + 9;
+    const miniPillH = 18;
     // Trajectory: header (right-aligned, clear of every node column), then
     // the connector lane, then the pill rows. Columns match the node row.
-    const trajLabelY = 172;
-    const connLaneY = 182;
-    const trajX0 = 20, trajRowY0 = 192, trajRowH = 46, trajMaxX = 880;
+    const trajLabelY = miniRowY + miniPillH + 19;
+    const connLaneY = trajLabelY + 10;
+    const trajX0 = 20, trajRowY0 = connLaneY + 10, trajRowH = 46, trajMaxX = 880;
     const pillH = 32;
     const bracketGap = 7;     // bracket centre below a pill row
     const bracketW = 3;
@@ -122,6 +141,40 @@ export default {
       dead.setAttribute('stroke', colorOf('revert'));
       await ctx.fade(dead, 0, 260);
       dead.remove();
+    }
+
+    // ---------------- node-2 mini lane: a short turn that visibly finishes ----------------
+    const miniLabel = ctx.el('text', {
+      x: trajX0, y: miniLabelY, class: 'mono', 'font-size': 9.5, fill: COLORS.muted,
+      'letter-spacing': '0.06em', text: 'NODE-2 · SHORT TURN', opacity: 0,
+    });
+    let miniX = trajX0;
+    function addMiniPill(label, type) {
+      const w = Math.max(58, label.length * 6.2 + 20);
+      const p = ctx.eventPill({ x: miniX, y: miniRowY, name: label, type, label, w, h: miniPillH });
+      const txt = p.querySelector('text');
+      txt.setAttribute('font-size', 9.5);
+      txt.setAttribute('y', miniPillH / 2);
+      txt.setAttribute('dominant-baseline', 'central');
+      miniX += w + 6;
+      return p;
+    }
+    function startNode2() {
+      const n2 = nodes[1];
+      setNodeStatus(n2, 'running', COLORS.iter);
+      showChip(ctx, n2, 'run · turn 7');
+      ctx.el('text', {
+        x: miniX, y: miniRowY + miniPillH / 2, 'dominant-baseline': 'central', class: 'mono',
+        'font-size': 9.5, fill: COLORS.dim, text: '⋯',
+      });
+      miniX += 16;
+    }
+    function finishNode2Turn() {
+      const n2 = nodes[1];
+      addMiniPill('IterationEnd', 'iter');
+      addMiniPill('AgentDone', 'agent');
+      hideChip(ctx, n2);
+      setNodeStatus(n2, 'idle', COLORS.muted, COLORS.line);
     }
 
     // ---------------- trajectory lane: the hero ----------------
@@ -249,39 +302,17 @@ export default {
       return p;
     }
 
-    // ---------------- node-2: a short, independent turn ----------------
-    ctx.spawn(async () => {
-      const n2 = nodes[1];
-      await ctx.wait(700);
-      if (!ctx.alive) return;
-      setNodeStatus(n2, 'running', COLORS.iter);
-      showChip(ctx, n2, 'run · turn 7');
-      await ctx.wait(3200);
-      if (!ctx.alive) return;
-      hideChip(ctx, n2);
-      setNodeStatus(n2, '✓ AgentDone', colorOf('agent'), COLORS.line);
-      await ctx.wait(1600);
-      if (!ctx.alive) return;
-      setNodeStatus(n2, 'idle', COLORS.muted, COLORS.line);
-    });
-
     // ---------------- deploy / sandbox-kill controls ----------------
-    let deployRequested = false, deployConsumed = false;
-    let killRequested = false;
+    // Buttons and fallback timers only flip flags — every visual consequence
+    // is played out in order inside the main narrative below, as its own
+    // beats, so a deploy is never a silent jump-cut.
+    let deployRequested = false, deployConsumed = false, deploySequenceDone = false;
+    let killRequested = false, toolFailConsumed = false;
+    let refusedNode = null;
 
-    function announceDraining() {
-      ctx.spawn(async () => {
-        for (const n of nodes) {
-          if (n.status === 'running') setNodeStatus(n, 'draining · in-flight run', colorOf('revert'));
-          else if (n.status !== 'suspended' && n.status !== 'resuming') setNodeStatus(n, 'draining', colorOf('revert'));
-        }
-        await ctx.wait(1);
-      });
-    }
-    ctx.button('Deploy v42', () => {
+    ctx.button('Deploy new version', () => {
       if (deployConsumed || deployRequested) return;
       deployRequested = true;
-      announceDraining();
     }, { title: 'Suspends the running turn at its NEXT boundary' });
 
     ctx.button('Kill sandbox', () => {
@@ -296,7 +327,7 @@ export default {
 
     ctx.spawn(async () => {
       await ctx.wait(4200);
-      if (ctx.alive && !deployRequested && !deployConsumed) { deployRequested = true; announceDraining(); }
+      if (ctx.alive && !deployRequested && !deployConsumed) deployRequested = true;
     });
     ctx.spawn(async () => {
       await ctx.wait(11500);
@@ -319,46 +350,56 @@ export default {
     await ctx.beat(
       `<strong>${current.label}</strong> starts a long turn. Each <span class="t t-agent">AgentStart</span> / ` +
       `<span class="t t-agent">AgentDone</span> brackets a turn; every <span class="t t-iter">IterationStart</span> / ` +
-      `<span class="t t-iter">IterationEnd</span> pair brackets one model call. Meanwhile <strong>node-2</strong> runs a short, unrelated turn.`
+      `<span class="t t-iter">IterationEnd</span> pair brackets one model call.`
     );
     addPill('AgentStart', 'agent');
     await attachNodeConn(current);
 
-    async function runIteration(i, opts = {}) {
-      addPill('IterationStart', 'iter');
+    await ctx.beat(
+      `Meanwhile <strong>node-2</strong> begins a short, independent turn on its own trajectory, just below.`
+    );
+    startNode2();
+    await ctx.fade(miniLabel, 1, 200);
+
+    async function runIteration(i) {
       await ctx.beat(
         i === 0
           ? `<span class="t t-iter">IterationStart</span> is written, the prompt is rebuilt from the trajectory, and ${current.label} calls a tool. Watch the line from ${current.label} down to the trajectory tip — that's the process physically appending.`
-          : `${current.label} keeps going — <span class="t t-iter">IterationStart</span>, tool call, same trajectory.`,
-        i === 0 ? 1300 : 700
+          : `${current.label} keeps going — <span class="t t-iter">IterationStart</span>, tool call, same trajectory.`
       );
-
+      addPill('IterationStart', 'iter');
       await ctx.pulse(current.x + current.w / 2, current.y + current.h / 2, colorOf('tool'), 16, 400);
-      let toolFails = killRequested && !opts._killConsumedFlag.done;
-      if (toolFails) opts._killConsumedFlag.done = true;
+      addPill('tool_call', 'tool');
+
+      const toolFails = killRequested && !toolFailConsumed;
+      if (toolFails) toolFailConsumed = true;
 
       if (toolFails) {
-        addPill('tool_call ✕', 'revert');
+        await ctx.beat(
+          'The sandbox dies mid tool call — the failing tool call ends the iteration, ' +
+          'not a retry: <span class="t t-tool">ToolExecutionEnd</span> lands as a failure.'
+        );
+        addPill('ToolExecutionEnd ✕', 'revert');
         await ctx.pulse(sandbox.x + sandbox.w / 2, sandbox.y + sandbox.h / 2, colorOf('revert'), 22, 500);
         sandboxState.setAttribute('fill', colorOf('revert'));
         sandboxState.textContent = 'DIED';
         await ctx.fade(sgArrow, 0.15, 200);
         await snapSandboxLine();
-        await ctx.beat('The sandbox dies mid tool call. The failing <span class="t t-tool">ToolExecutionEnd</span> ends the iteration right here.');
       } else {
-        addPill('tool_call', 'tool');
         await ctx.wait(400);
       }
 
-      addPill('IterationEnd', 'iter');
       await ctx.beat(
         `<span class="t t-iter">IterationEnd</span> lands. The trajectory now holds everything the next iteration needs — ` +
         `the loop could simply stop here.`
       );
+      addPill('IterationEnd', 'iter');
+
+      if (deployRequested && !deploySequenceDone) await runDeploySequence();
 
       let reason = null;
       if (toolFails) reason = 'sandbox';
-      else if (deployRequested && !deployConsumed) { reason = 'deploy'; deployConsumed = true; }
+      else if (deployRequested && deploySequenceDone && !deployConsumed) { reason = 'deploy'; deployConsumed = true; }
 
       if (reason) {
         current = await suspendResume(reason);
@@ -367,9 +408,8 @@ export default {
       }
     }
 
-    const killFlag = { done: false };
     for (let i = 0; i < 3; i++) {
-      await runIteration(i, { _killConsumedFlag: killFlag });
+      await runIteration(i);
     }
 
     addPill('AgentDone', 'agent');
@@ -385,41 +425,88 @@ export default {
       1400
     );
 
+    // -------- the drain narrative: what happens to the REST of the fleet --
+    // while the long turn on node-1 keeps running towards its own boundary.
+    async function runDeploySequence() {
+      await ctx.beat(
+        'Deploy starts. Each node stops accepting new activations and lets its in-flight run drain — ' +
+        'most turns simply finish on their own.'
+      );
+      for (const n of nodes) {
+        const running = n.status === 'running';
+        setNodeStatus(n, running ? 'draining · finishing run' : 'draining · no new work', colorOf('revert'));
+      }
+
+      refusedNode = nodes.find((n) => n.status === 'draining · no new work') || null;
+      if (refusedNode) {
+        await ctx.beat(
+          `An activation arrives for new work. <strong>${refusedNode.label}</strong> refuses it — a draining node ` +
+          `takes no new activations — so the work waits for a freshly deployed node.`
+        );
+        const spoke = acpSpokes[nodes.indexOf(refusedNode)];
+        await activationBolt(ctx, spoke, refusedNode, acp, nodeBottom);
+        await ctx.pulse(refusedNode.portAcp, nodeBottom, colorOf('revert'), 14, 380);
+      }
+
+      await ctx.beat(
+        `<strong>node-2</strong>'s short turn reaches its own <span class="t t-agent">AgentDone</span> and finishes cleanly, ` +
+        `on its own trajectory — most turns simply finish during a drain.`
+      );
+      finishNode2Turn();
+
+      deploySequenceDone = true;
+    }
+
     // -------- suspend/resume sequence, reused for both trigger reasons ----
     async function suspendResume(reason) {
       const oldNode = current; // the node whose run is about to be disposed
+
+      await ctx.beat(
+        `Run exits <strong>SUSPENDED</strong> — no <span class="t t-agent">AgentDone</span> is written. The still-open agent ` +
+        `block is itself the signal there's work to continue. Notice both connectors just snapped.`
+      );
       await ctx.fade(oldNode._chip, 0, 300);
       oldNode._chip?.remove();
       oldNode._chip = null;
       setNodeStatus(oldNode, 'suspended', colorOf('revert'));
       await Promise.all([snapNodeConn(), snapSandboxLine()]);
-      await ctx.beat(
-        `Run exits <strong>SUSPENDED</strong> — no <span class="t t-agent">AgentDone</span> is written. The still-open agent ` +
-        `block is itself the signal there's work to continue. Notice both connectors just snapped.`
-      );
 
       if (reason === 'deploy') {
         // oldNode stays frozen at its old version — it's disposable and about
-        // to be discarded. Every OTHER node is what actually rolls to v42.
+        // to be discarded. Every OTHER node is what actually rolls to v42
+        // (node-2 already finished and went idle during the drain; node-3
+        // was refusing new work — both are retired into the fresh version).
+        const nextVersion = `v${Number(version.slice(1)) + 1}`; // each deploy moves forward
+        await ctx.beat(
+          `Fresh <strong>${nextVersion}</strong> nodes roll in. ${oldNode.label} stays frozen at ${version} — ` +
+          `suspended, waiting to be picked up.`
+        );
         const upgrading = nodes.filter((n) => n !== oldNode);
-        upgrading.forEach((n) => setNodeStatus(n, 'draining', colorOf('revert')));
-        await ctx.wait(300);
         await Promise.all(upgrading.map((n) => ctx.fade(n.box, 0.15, 260)));
-        const oldVersion = version;
-        version = version === 'v41' ? 'v42' : 'v41';
+        version = nextVersion;
         upgrading.forEach((n) => { n.verTxt.textContent = version; });
         await Promise.all(upgrading.map((n) => ctx.fade(n.box, 1, 260)));
         upgrading.forEach((n) => setNodeStatus(n, 'idle', COLORS.muted, COLORS.line));
-        await ctx.beat(
-          `Fresh <strong>${version}</strong> nodes roll in. ${oldNode.label} stays frozen at ${oldVersion} — suspended, ` +
-          `waiting to be picked up — while in-flight turns elsewhere simply finish.`
-        );
+
+        if (refusedNode) {
+          await ctx.beat(
+            `The queued activation finally lands on <strong>${refusedNode.label}</strong>, now on <strong>${version}</strong> — ` +
+            `it goes to a freshly deployed node once one is up.`
+          );
+          const spoke = acpSpokes[nodes.indexOf(refusedNode)];
+          await activationBolt(ctx, spoke, refusedNode, acp, nodeBottom);
+          showChip(ctx, refusedNode, 'run · queued');
+          await ctx.wait(500);
+          hideChip(ctx, refusedNode);
+          refusedNode = null;
+        }
       } else {
         await ctx.beat('The sandbox is gone. Sandboxes run separately from the fleet — the box was never the durable part.');
         sandboxAttach.textContent = '—';
         sandboxState.textContent = 'rebuilding…';
         await ctx.pulse(git.x + git.w / 2, git.y + git.h / 2, colorOf('compact'), 18, 450);
         await ctx.fade(sgArrow, 0.85, 200);
+
         await ctx.beat('A resumed agent rebuilds its sandbox from the repo. The project\'s durable state is the repo, not the box.');
       }
 
@@ -435,13 +522,14 @@ export default {
       await activationBolt(ctx, spoke, target, acp, nodeBottom);
       setNodeStatus(target, 'resuming', colorOf('activation'));
       showChip(ctx, target, `run · turn ${iterCount}`);
+
+      await ctx.beat(
+        `${target.label} reattaches to the sandbox and its connector locks onto the <em>same</em> trajectory tip — same run, right where it left off.`
+      );
       sandboxAttach.textContent = target.label;
       sandboxState.setAttribute('fill', COLORS.muted);
       sandboxState.textContent = 'attached';
       await Promise.all([attachSandboxLine(target), attachNodeConn(target)]);
-      await ctx.beat(
-        `${target.label} reattaches to the sandbox and its connector locks onto the <em>same</em> trajectory tip — same run, right where it left off.`
-      );
       setNodeStatus(target, 'running', COLORS.iter);
       iterCount++;
       return target;

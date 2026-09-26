@@ -1,3 +1,5 @@
+import { CHAT_CYCLE, listOf } from '../story.js';
+
 // #viz-hero — ambient overview of the whole system: a workspace-level chat
 // agent fanning work out to project builders, which boot on fleet nodes and
 // report progress back, all through inboxes + activations over the ACP.
@@ -39,9 +41,6 @@ const STATUS = {
   running: { color: 'tool', label: 'running' },
   suspended: { color: 'activation', label: 'suspended' },
 };
-
-// 'a', 'a and b', 'a, b and c'
-const listOf = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 export default {
   width: 900,
@@ -211,61 +210,17 @@ export default {
 
 // ---------- guided tour: one deterministic task cycle, beat by beat ----------
 
+// Captions and beat order live in js/story.js (CHAT_CYCLE), shared verbatim
+// with hero3d.js's guidedTour3d — this function only supplies the 2D visual
+// action per beat id.
 async function guidedTour(ctx, world) {
   const { chat, chatPanel, chatState, projects, nodes } = world;
   chatState.pinned = true;
   const p = projects.find((pr) => pr.key === 'dashboard');
   p.busy = true;
   const chatCx = chat.x + chat.w / 2, chatCy = chat.y + chat.h / 2;
-
-  // Statuses are set explicitly here (not via chatWake's timer) so every held
-  // frame shows a consistent state.
-  await ctx.beat('the user sends a message; it reaches the chat agent');
-  setStatus(ctx, chatPanel, 'running');
-  tick(ctx, chatPanel, 'user');
-  await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
-
-  await ctx.beat("the chat agent calls send_message_to_project for dashboard — the envelope travels to the Agent Control Plane bar and drops there: that's SendMessage");
-  tick(ctx, chatPanel, 'tool');
-  // Beat 2 ends with the envelope resting in ACP; delivery is beat 3.
-  await viaAcp(ctx, world, p, 'down', 'SendMessage', undefined, {
-    between: async () => {
-      await ctx.beat("ACP appends an ExternalAgentNotification to dashboard's inbox — the inbox badge goes to 1: the durable step");
-      // Its turn done, the chat agent sleeps until a notification arrives.
-      setStatus(ctx, chatPanel, 'asleep');
-      chatPanel.activity.textContent = 'idle · waiting for a message';
-    },
-  });
-  setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
-  await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
-
-  await ctx.beat("ACP publishes an activation — the yellow signal leaves the bar's bottom edge for a fleet node");
-  const node = await pickFreeNode(ctx, nodes);
-  await sendActivation(ctx, world, p, node);
-
-  await ctx.beat(`${node.name} picks it up and lights up; it boots dashboard with its trajectory — the builder goes to running`);
-  await bootNode(ctx, world, p, node);
-  setStatus(ctx, p.panel, 'running');
-  setInboxCount(ctx, p.panel, 0);
-  p.panel.activity.textContent = 'AgentStart · admitted its inbox';
-
-  await ctx.beat('the builder iterates: IterationStart, tool_call, IterationEnd');
-  tick(ctx, p.panel, 'iter');
-  await ctx.wait(360);
-  tick(ctx, p.panel, 'tool');
-  await ctx.wait(360);
-  tick(ctx, p.panel, 'iter');
-
-  // Upward messages take the same two hops (drop into ACP, then delivery),
-  // and each one wakes the chat agent for its own short turn.
   const trayPoint = chatPanel.trayPoint;
-  const notifyChat = async (kind, deliverCaption) => {
-    const accent = kind === 'agent' ? ctx.COLORS.agent : ctx.COLORS.notify;
-    await viaAcp(ctx, world, p, 'up', 'NotifyParents', accent, { between: () => ctx.beat(deliverCaption) });
-    setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
-    await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('notify'), 14, 380);
-    await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 420); // the activation
-  };
+
   const chatTurn = async (doing, builderKeepsGoing) => {
     setInboxCount(ctx, chatPanel, 0);
     setStatus(ctx, chatPanel, 'running');
@@ -287,27 +242,115 @@ async function guidedTour(ctx, world) {
     chatPanel.activity.textContent = 'idle · waiting for a message';
   };
 
-  await ctx.beat('the builder posts a progress update — NotifyParents drops an ExternalAgentNotification into ACP');
-  await notifyChat('notify', "ACP appends it to the chat agent's inbox and sends an activation (inbox · 1)");
+  const params = { project: p.label, node: '' };
+  let node = null;
+  let sendState = null, progressState = null, resultState = null;
 
-  await ctx.beat('the chat agent wakes: at run start it admits the update onto its trajectory (inbox · 0) and iterates on it — relaying the progress to the user. Dashboard keeps working meanwhile');
-  await chatTurn('relaying progress to the user', true);
-
-  await ctx.beat('its turn ends — AgentDone, and the chat agent goes idle again');
-  chatIdle();
-
-  await ctx.beat('the builder finishes: AgentDone — the node goes dim, the builder goes to asleep, and NotifyParents drops the result into ACP');
-  tick(ctx, p.panel, 'agent');
-  setNodeActive(ctx, node, null);
-  setStatus(ctx, p.panel, 'asleep');
-  p.panel.activity.textContent = 'idle · waiting for a task';
-  await notifyChat('agent', "ACP appends the result to the chat agent's inbox and sends an activation (inbox · 1)");
-
-  await ctx.beat('the chat agent wakes, admits the result at run start (inbox · 0), and iterates — summarizing the result for the user');
-  await chatTurn('summarizing the result for the user', false);
-
-  await ctx.beat('AgentDone — the chat agent goes idle; the cycle is complete', 1400);
-  chatIdle();
+  for (const beat of CHAT_CYCLE) {
+    await ctx.beat(beat.caption(params), beat.id === 'chat-result-done' ? 1400 : undefined);
+    switch (beat.id) {
+      case 'user-to-inbox':
+        setInboxCount(ctx, chatPanel, 1);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('user'), 16, 350);
+        break;
+      case 'user-activation':
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 300);
+        // Woken: the run has started, the message is still pending in the inbox.
+        setStatus(ctx, chatPanel, 'running');
+        chatPanel.activity.textContent = 'AgentStart · reading its inbox';
+        break;
+      case 'user-admit':
+        setInboxCount(ctx, chatPanel, 0);
+        setStatus(ctx, chatPanel, 'running');
+        tick(ctx, chatPanel, 'user');
+        await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 20, 350);
+        break;
+      case 'send-message':
+        tick(ctx, chatPanel, 'tool');
+        // Ends with the envelope resting in ACP — not yet in dashboard's inbox.
+        sendState = await dropIntoAcp(ctx, world, p, 'down', 'SendMessage');
+        break;
+      case 'inbox-append':
+        // Its turn done, the chat agent sleeps until a notification arrives.
+        setStatus(ctx, chatPanel, 'asleep');
+        chatPanel.activity.textContent = 'idle · waiting for a message';
+        await carryFromAcp(ctx, world, sendState);
+        setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
+        await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
+        break;
+      case 'activation':
+        node = await pickFreeNode(ctx, nodes);
+        params.node = node.name;
+        await sendActivation(ctx, world, p, node);
+        break;
+      case 'boot':
+        await bootNode(ctx, world, p, node);
+        setStatus(ctx, p.panel, 'running');
+        setInboxCount(ctx, p.panel, 0);
+        p.panel.activity.textContent = 'AgentStart · admitted its inbox';
+        break;
+      case 'iterate':
+        tick(ctx, p.panel, 'iter');
+        await ctx.wait(360);
+        tick(ctx, p.panel, 'tool');
+        await ctx.wait(360);
+        tick(ctx, p.panel, 'iter');
+        break;
+      case 'interject':
+        // Two follow-up messages arrive via ACP while dashboard keeps
+        // iterating — same two-hop delivery, just piling up in the inbox
+        // instead of being admitted.
+        await viaAcp(ctx, world, p, 'down', 'SendMessage');
+        setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
+        await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
+        await viaAcp(ctx, world, p, 'down', 'SendMessage');
+        setInboxCount(ctx, p.panel, p.panel.inboxCount + 1);
+        await ctx.pulse(p.panel.trayPoint.x, p.panel.trayPoint.y, ctx.colorOf('notify'), 16, 400);
+        break;
+      case 'batch-admit':
+        tick(ctx, p.panel, 'iter');
+        // Both pending messages land on the trajectory together, as two
+        // chips at once.
+        addChip(ctx, p.panel.lane, ctx.colorOf('notify'));
+        addChip(ctx, p.panel.lane, ctx.colorOf('notify'));
+        setInboxCount(ctx, p.panel, 0);
+        break;
+      case 'progress-drop':
+        progressState = await dropIntoAcp(ctx, world, p, 'up', 'NotifyParents', ctx.COLORS.notify);
+        break;
+      case 'progress-inbox':
+        await carryFromAcp(ctx, world, progressState);
+        setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('notify'), 14, 380);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 420);
+        break;
+      case 'chat-progress-turn':
+        await chatTurn('relaying progress to the user', true);
+        break;
+      case 'chat-progress-done':
+        chatIdle();
+        break;
+      case 'result-drop':
+        tick(ctx, p.panel, 'agent');
+        setNodeActive(ctx, node, null);
+        setStatus(ctx, p.panel, 'asleep');
+        p.panel.activity.textContent = 'idle · waiting for a task';
+        resultState = await dropIntoAcp(ctx, world, p, 'up', 'NotifyParents', ctx.COLORS.agent);
+        break;
+      case 'result-inbox':
+        await carryFromAcp(ctx, world, resultState);
+        setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('notify'), 14, 380);
+        await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 420);
+        break;
+      case 'chat-result-turn':
+        await chatTurn('summarizing the result for the user', false);
+        break;
+      case 'chat-result-done':
+        chatIdle();
+        break;
+    }
+  }
   p.busy = false;
 }
 
@@ -599,10 +642,16 @@ async function runFanOut(ctx, world) {
   if (!chosen.length) return; // every project is already busy — try again next cycle
   chosen.forEach((p) => { p.busy = true; }); // claim immediately, before any await
 
+  // The user's message lands in the inbox, wakes the chat agent via its own
+  // activation, and is only then admitted onto the trajectory at run start —
+  // same three-step opening as the guided tour, not a direct trajectory tick.
+  const trayPoint = chatPanel.trayPoint;
+  setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
+  await ctx.pulse(trayPoint.x, trayPoint.y, ctx.colorOf('user'), 16, 350);
+  await ctx.pulse(trayPoint.x, trayPoint.y, ctx.COLORS.activation, 18, 300);
   chatWake();
+  setInboxCount(ctx, chatPanel, 0);
   tick(ctx, chatPanel, 'user');
-  const chatCx = world.chat.x + world.chat.w / 2, chatCy = world.chat.y + world.chat.h / 2;
-  await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
 
   say(`chat agent calls send_message_to_project for ${listOf(chosen.map((p) => p.label))} — ACP delivers it`);
 
@@ -674,20 +723,17 @@ async function deliverToProject(ctx, world, p) {
   p.busy = false;
 }
 
-// `between` holds a beat with the notification resting in ACP; `keep`
-// leaves it pending in the chat inbox (the tour admits it explicitly).
-async function sendBack(ctx, world, p, kind, { between, keep = false } = {}) {
+async function sendBack(ctx, world, p, kind) {
   if (!ctx.alive) return;
   const { chatPanel, chatWake } = world;
   const trayPoint = chatPanel.trayPoint;
   const color = ctx.colorOf('notify');
-  await viaAcp(ctx, world, p, 'up', 'NotifyParents', kind === 'agent' ? ctx.COLORS.agent : color, { between });
+  await viaAcp(ctx, world, p, 'up', 'NotifyParents', kind === 'agent' ? ctx.COLORS.agent : color);
   if (!ctx.alive) return;
   chatWake();
   tick(ctx, chatPanel, kind === 'agent' ? 'agent' : 'notify');
   setInboxCount(ctx, chatPanel, chatPanel.inboxCount + 1);
   await ctx.pulse(trayPoint.x, trayPoint.y, color, 14, 380);
-  if (keep) return;
   await ctx.wait(500);
   if (ctx.alive) setInboxCount(ctx, chatPanel, Math.max(0, chatPanel.inboxCount - 1));
 }
@@ -696,9 +742,13 @@ async function sendBack(ctx, world, p, kind, { between, keep = false } = {}) {
 // ACP (SendMessage / NotifyParents) and the envelope drops into ACP; then ACP,
 // as a separate step, appends it to the recipient's inbox. Agents never
 // message each other directly.
-// `between` (optional) runs after the drop into ACP and before delivery —
-// the guided tour uses it to hold a beat with the envelope resting in ACP.
-async function viaAcp(ctx, world, p, dir, call, accent, { between } = {}) {
+//
+// Split into two steps, mirroring hero3d.js's sendToBelt/carryToBin, so a
+// guided-tour beat can hold with the envelope resting in ACP before the next
+// beat delivers it: dropIntoAcp ends with the envelope sitting in the bar;
+// carryFromAcp finishes the delivery.
+
+async function dropIntoAcp(ctx, world, p, dir, call, accent) {
   const { COLORS } = ctx;
   const { chat, acpY, gutterX, chatLinkY, signals } = world;
   const px = p.x + p.w / 2, boxBottom = p.y + p.h, barY = acpY + ACP_H / 2;
@@ -724,33 +774,39 @@ async function viaAcp(ctx, world, p, dir, call, accent, { between } = {}) {
   const label = world.acpLabel;
   world.acpInFlight++;
   const env = envelope(ctx, COLORS.notify, accent);
-  let path = null;
   const leg = async (pts, ms) => {
-    path = ctx.el('path', {
+    const path = ctx.el('path', {
       d: 'M' + pts.map(([x, y]) => `${x},${y}`).join(' L'),
       fill: 'none', stroke: COLORS.notify, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.5,
     }, signals);
     ctx.setPos(env, pts[0][0], pts[0][1]);
     await ctx.along(env, path, ms, ctx.ease.inOut);
     path.remove();
-    path = null;
   };
+  // Hop 1: the sender hands the message to ACP; it drops into the bar.
+  await leg(inbound, 900);
+  label.textContent = `ACP · ${call}`;
+  label.setAttribute('opacity', 1);
+  const [dx, dy] = inbound[inbound.length - 1];
+  await ctx.pulse(dx, dy, COLORS.notify, 14, 320);
+  return { env, outboundLeg, label, leg };
+}
+
+async function carryFromAcp(ctx, world, state, ms = 650) {
+  const { env, outboundLeg, label, leg } = state;
   try {
-    // Hop 1: the sender hands the message to ACP; it drops into the bar.
-    await leg(inbound, 900);
-    label.textContent = `ACP · ${call}`;
-    label.setAttribute('opacity', 1);
-    const [dx, dy] = inbound[inbound.length - 1];
-    await ctx.pulse(dx, dy, COLORS.notify, 14, 320);
-    if (between) await between();
     // Hop 2: ACP sends it on to the recipient's inbox — a separate, quicker step.
-    await leg(outboundLeg, 650);
+    await leg(outboundLeg, ms);
     await ctx.fade(env, 0, 160);
   } finally {
     env.remove();
-    path?.remove();
     if (--world.acpInFlight === 0) label.setAttribute('opacity', 0);
   }
+}
+
+async function viaAcp(ctx, world, p, dir, call, accent) {
+  const state = await dropIntoAcp(ctx, world, p, dir, call, accent);
+  await carryFromAcp(ctx, world, state);
 }
 
 function envelope(ctx, color, accent) {

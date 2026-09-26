@@ -3,14 +3,26 @@
 // both send_message_to_project (down) and progress/results (up via
 // NotifyParents), rides through the Agent Control Plane — appended to the
 // recipient's inbox, then an activation wakes it — before it ever reaches a
-// project card.
+// project card. The chat agent's own inbox works the same way: a UserMessage
+// or an ExternalAgentNotification lands there first and only gets copied onto
+// its trajectory when it's admitted, at run start or an iteration boundary —
+// never straight onto the strip the moment it arrives.
 
 const W = 900, H = 480;
 
 const PROJECTS = [
-  { key: 'marketing-site', label: 'marketing-site', abbr: 'mkt', cx: 320, ask: 'pricing page', files: 4, credits: '1.2', ok: true },
-  { key: 'dashboard', label: 'dashboard', abbr: 'dash', cx: 515, ask: 'dark mode', files: 6, credits: '2.1', ok: true },
-  { key: 'mobile-app', label: 'mobile-app', abbr: 'mob', cx: 710, ask: 'login bug fix', files: 2, credits: '0.8', ok: false },
+  {
+    key: 'marketing-site', label: 'marketing-site', abbr: 'mkt', cx: 320, ask: 'pricing page',
+    message: 'add a pricing page with three tiers', files: 4, credits: '1.2', ok: true,
+  },
+  {
+    key: 'dashboard', label: 'dashboard', abbr: 'dash', cx: 515, ask: 'dark mode',
+    message: 'add a dark-mode toggle to settings; persist per user', files: 6, credits: '2.1', ok: true,
+  },
+  {
+    key: 'mobile-app', label: 'mobile-app', abbr: 'mob', cx: 710, ask: 'login bug fix',
+    message: 'fix the login bug on password reset', files: 2, credits: '0.8', ok: false,
+  },
 ];
 const PAD = 12; // inner padding of cards and the transcript window
 const INBOX_R = 5; // inbox circle radius
@@ -147,27 +159,39 @@ export default {
       x: CHAT_X + CHAT_PAD, y: CHAT_Y + 20, 'dominant-baseline': 'central', 'font-size': 11, fill: COLORS.muted,
       text: 'own trajectory · sees every project',
     }, ctx.root);
+    // Running / idle readout, right-aligned on the same line as the subtitle.
+    const chatStatusText = el('text', {
+      x: CHAT_X + CHAT_W - CHAT_PAD, y: CHAT_Y + 20, 'text-anchor': 'end', 'dominant-baseline': 'central',
+      class: 'mono', 'font-size': 10.5, fill: COLORS.muted, text: 'asleep',
+    }, ctx.root);
 
     // inbox mark — sits on the card's bottom edge; its label sits beside it,
     // centered in the gap between the card and the bar (clear of the strip
-    // and of envelopes riding the stub).
+    // and of envelopes riding the stub). The count is truthful: it only ever
+    // shows what hasn't yet been admitted onto the trajectory.
     const chatInboxDot = el('circle', { cx: CHAT_INBOX.x, cy: CHAT_INBOX.y, r: INBOX_R, fill: COLORS.panel, stroke: COLORS.notify, 'stroke-width': 1.5 }, ctx.root);
-    el('text', {
+    const chatInboxLabel = el('text', {
       x: CHAT_INBOX.x + ENV_HALF_W + 6, y: (CHAT_INBOX.y + BAR_Y) / 2, 'dominant-baseline': 'central',
       class: 'mono', 'font-size': 10, fill: COLORS.notify, text: 'inbox',
     }, ctx.root);
+    function setChatInboxCount(n) {
+      chatInboxLabel.textContent = n > 0 ? `inbox · ${n}` : 'inbox';
+    }
 
-    // the empty band between the subtitle and the trajectory strip: show the
-    // three send_message_to_project(...) tool calls as they're emitted.
+    // the empty band between the subtitle and the trajectory strip: each
+    // project's send_message_to_project(...) call, together with the
+    // SELF-CONTAINED message the chat agent wrote for it — the builder will
+    // only ever see this one line, never the chat thread it was derived from.
     const callLines = {};
     PROJECTS.forEach((p, i) => {
-      const t = el('text', {
-        x: CHAT_X + CHAT_PAD, y: CHAT_Y + 40 + i * 14, 'dominant-baseline': 'central',
-        class: 'mono', 'font-size': 10.5, fill: COLORS.tool,
-        text: `send_message_to_project(${p.label})`,
+      const rowY = CHAT_Y + 38 + i * 15;
+      const line = el('text', {
+        x: CHAT_X + CHAT_PAD, y: rowY, 'dominant-baseline': 'central', class: 'mono', 'font-size': 9.5,
       }, ctx.root);
-      t.setAttribute('opacity', 0);
-      callLines[p.key] = t;
+      el('tspan', { fill: COLORS.tool, text: `→ ${p.label}: ` }, line);
+      el('tspan', { fill: COLORS.muted, text: `"${p.message}"` }, line);
+      line.setAttribute('opacity', 0);
+      callLines[p.key] = line;
     });
 
     // horizontal trajectory strip (scrolling window)
@@ -204,7 +228,7 @@ export default {
         },
       };
     }
-    const chatStrip = makeStrip(stripInner, STRIP_W, 92, STRIP_H, 6);
+    const chatStrip = makeStrip(stripInner, STRIP_W, 112, STRIP_H, 6);
 
     // ================= the Agent Control Plane =================
     // A slim bar spanning the full project row. The chat agent connects to
@@ -368,8 +392,12 @@ export default {
     }
 
     // The full two-leg carry: sender -> bar (drop, pulse, shared label) ->
-    // recipient's inbox (faster leg). Returns once the message has landed —
-    // callers handle the activation that follows separately.
+    // recipient's inbox (faster leg). Returns once the message has landed.
+    // For 'down' deliveries this also pulses the project's inbox dot (the
+    // append is the whole story there). For 'up' deliveries into the chat
+    // agent's inbox, the caller drives the append/activation itself, since
+    // that's the one that has to decide "already running" vs "asleep" and
+    // keep the inbox count honest.
     async function carryEnvelope(direction, key, callName, ms = 900) {
       const { p0, pMid, pDrop, p3 } = acpPoints(key, direction);
       const leg1 = `M${p0.x},${p0.y} L${pMid.x},${pMid.y} L${pDrop.x},${pDrop.y}`;
@@ -392,8 +420,7 @@ export default {
         env.remove();
       }
 
-      const dot = direction === 'down' ? projState[key].inboxDot : chatInboxDot;
-      await pulseInbox(dot);
+      if (direction === 'down') await pulseInbox(projState[key].inboxDot);
     }
 
     // the inbox pulse: a message was appended (durable step) — cyan, not
@@ -445,40 +472,131 @@ export default {
       tag.remove();
     }
 
-    // NotifyParents also activates the chat agent — bolt from the bar's top
-    // edge up into its inbox.
-    async function chatActivation() {
+    // wakes the chat agent: bolt from the bar's top edge up into its inbox.
+    async function chatWake() {
       await barBolt(CHAT_INBOX.x, BAR_Y, CHAT_INBOX.y + INBOX_R);
-      await ctx.pulse(CHAT_INBOX.x, CHAT_INBOX.y, COLORS.activation, 14, 450);
+      await ctx.pulse(CHAT_INBOX.x, CHAT_INBOX.y, COLORS.activation, 14, 500);
+    }
+
+    // the chat agent is already running its own turn: the activation still
+    // arrives (bolt reaches it), but it's acknowledged and dropped — the
+    // message stays in the inbox for the next iteration boundary.
+    async function chatAckDropped() {
+      await barBolt(CHAT_INBOX.x, BAR_Y, CHAT_INBOX.y + INBOX_R);
+      const tag = el('text', {
+        x: CHAT_INBOX.x - (ENV_HALF_W + 6), y: (CHAT_INBOX.y + BAR_Y) / 2, 'text-anchor': 'end', 'dominant-baseline': 'central',
+        class: 'mono', 'font-size': 10, fill: COLORS.activation, text: 'already running · ack',
+      }, ctx.root);
+      tag.setAttribute('opacity', 0);
+      await ctx.fade(tag, 1, 160);
+      await ctx.wait(650);
+      await ctx.fade(tag, 0, 250);
+      tag.remove();
+    }
+
+    // ================= the chat agent's own inbox → trajectory gate =================
+    // Every message into the chat agent — down the road a progress update or
+    // a result, always up via NotifyParents — is the same two steps: append
+    // to its inbox (durable, counted truthfully on the card), then an
+    // activation. If the chat agent is already running, the activation is
+    // just acknowledged; the item waits for the next iteration boundary. If
+    // it's asleep, the activation wakes it, and everything currently queued
+    // is admitted at run start. `processFn` is only ever invoked once its
+    // item has actually been admitted onto the trajectory — never on arrival.
+    let chatRunning = false;
+    let chatPending = [];
+    async function chatArrival(processFn) {
+      chatPending.push(processFn);
+      setChatInboxCount(chatPending.length);
+      await pulseInbox(chatInboxDot);
+      if (chatRunning) {
+        await chatAckDropped();
+        return; // picked up at this run's next iteration boundary
+      }
+      chatRunning = true;
+      chatStatusText.textContent = 'running';
+      chatStatusText.setAttribute('fill', COLORS.iter);
+      await chatWake();
+      while (chatPending.length) {
+        const batch = chatPending;
+        chatPending = [];
+        setChatInboxCount(0);
+        await chatStrip.push('IterationStart', 'iter');
+        for (const fn of batch) await fn();
+        await chatStrip.push('IterationEnd', 'iter');
+      }
+      await chatStrip.push('AgentDone', 'agent');
+      chatRunning = false;
+      chatStatusText.textContent = 'idle';
+      chatStatusText.setAttribute('fill', COLORS.muted);
+    }
+
+    // A progress update, admitted: one trajectory row, one transcript line.
+    async function onProgress(st, text) {
+      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
+      await addRow(text || `${st.label}: ${st.ask}`, COLORS.notify);
+    }
+
+    // Resolved the moment the first result has actually been admitted and
+    // written — lets the main flow hold its "running in parallel" caption
+    // until a result has really landed, instead of racing a fixed timer.
+    let resolveFirstResultAdmitted, resolveAllResultsAdmitted;
+    const firstResultAdmitted = new Promise((r) => { resolveFirstResultAdmitted = r; });
+    const allResultsAdmitted = new Promise((r) => { resolveAllResultsAdmitted = r; });
+    let resultsSeen = 0;
+
+    // A terminal result, admitted: one trajectory row, one transcript line.
+    // Once every project has reported in, the chat agent writes its summary
+    // reply in that same admitted turn — the transcript only ever shows
+    // things it actually wrote, after admitting what it's summarizing.
+    async function onResult(st) {
+      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
+      const check = st.ok ? '✓' : '✗';
+      await addRow(`${st.label} ${check} ${st.files} files · ${st.credits}cr`, st.ok ? COLORS.tool : COLORS.revert);
+      resultsSeen++;
+      if (resultsSeen === 1) resolveFirstResultAdmitted();
+      if (resultsSeen === PROJECTS.length) {
+        await chatStrip.push('reply', 'content');
+        await addBubble(
+          `Done — pricing page live, dark mode shipped. ${projState['mobile-app'].ok ? '' : "mobile-app's fix needs another pass: the build failed on tests."}`.trim(),
+        );
+        resolveAllResultsAdmitted();
+      }
     }
 
     ctx.button('Send another task', () => ctx.spawn(() => followUp()));
 
-    // Resolved the moment the first terminal (AgentDone) result notification
-    // lands — lets the main flow hold its "running in parallel" caption
-    // until a result has actually started arriving, instead of on a fixed
-    // timer that can race ahead of (or lag behind) the animation.
-    let resolveFirstResult;
-    const firstResult = new Promise((res) => { resolveFirstResult = res; });
-
-    async function runBuilder(key, { resumed = false } = {}) {
-      const st = projState[key];
-      if (!resumed) {
-        st.statusText.textContent = 'waking…';
-        await wakeActivation(st);
-      }
+    // Wakes a builder and admits its message onto its own trajectory — the
+    // same run-start step every agent does, just drawn on the project card.
+    async function wakeAndAdmit(st) {
+      st.statusText.textContent = 'waking…';
+      await wakeActivation(st);
       st.statusText.textContent = 'running';
       st.statusText.setAttribute('fill', COLORS.iter);
       await st.vStrip.push('IterationStart', 'iter');
-      await ctx.wait(1000);
       await st.vStrip.push('tool_call', 'tool');
-      await ctx.wait(900);
+    }
 
-      // mid-turn progress notification, carried back up through the ACP
-      await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
-      await chatActivation();
-      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
-      await addRow(`${st.label}: ${st.ask}`, COLORS.notify);
+    async function runBuilder(key, { resumed = false, skipProgress = false, tailOnly = false } = {}) {
+      const st = projState[key];
+      if (!tailOnly) {
+        if (!resumed) {
+          st.statusText.textContent = 'waking…';
+          await wakeActivation(st);
+        }
+        st.statusText.textContent = 'running';
+        st.statusText.setAttribute('fill', COLORS.iter);
+        await st.vStrip.push('IterationStart', 'iter');
+        await ctx.wait(1000);
+        await st.vStrip.push('tool_call', 'tool');
+        await ctx.wait(900);
+
+        // mid-turn progress notification, carried back up through the ACP
+        if (!skipProgress) {
+          await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
+          await chatArrival(() => onProgress(st));
+        }
+      }
 
       await ctx.wait(1000);
       await st.vStrip.push('IterationEnd', 'iter');
@@ -490,66 +608,108 @@ export default {
 
       // terminal notification, carried back up through the ACP
       await carryEnvelope('up', key, `NotifyParents ← ${st.abbr}`, 1100);
-      await chatActivation();
-      await chatStrip.push(`Notif·${st.abbr}`, 'notify');
-      const check = st.ok ? '✓' : '✗';
-      await addRow(
-        `${st.label} ${check} ${st.files} files · ${st.credits}cr`,
-        st.ok ? COLORS.tool : COLORS.revert,
-      );
-      resolveFirstResult();
+      await chatArrival(() => onResult(st));
       return st;
     }
 
     // ================= main script =================
     await ctx.beat(
-      'The user asks the <b>chat agent</b> — running at the <b>workspace</b> level, on its own trajectory — for three things at once.',
+      'The user asks the <b>chat agent</b> — running at the <b>workspace</b> level, on its own trajectory — for three things at once. The message lands in its <b>inbox</b> first — it hasn\'t touched the trajectory yet.',
     );
     await addBubble(
       'Add a pricing page to marketing-site, dark mode to dashboard, and fix the login bug in mobile-app',
       { user: true },
     );
-    await chatStrip.push('UserMsg', 'user');
-    await ctx.wait(300);
+    setChatInboxCount(1);
+    await pulseInbox(chatInboxDot);
 
-    await ctx.beat('It thinks, then calls <code>send_message_to_project</code> three times in one turn — one per project, in parallel. That tool is just SendMessage.');
+    await ctx.beat('An activation wakes the chat agent. At <b>run start</b> it admits the inbox message onto its trajectory — the inbox count goes back to 0.');
+    await chatWake();
+    chatStatusText.textContent = 'running';
+    chatStatusText.setAttribute('fill', COLORS.iter);
+    await chatStrip.push('IterationStart', 'iter');
+    setChatInboxCount(0);
+    await chatStrip.push('UserMsg', 'user');
+
+    await ctx.beat('It thinks, then proposes a plan and asks the user to confirm before it touches any project.');
+    await chatStrip.push('thinking', 'thinking');
+    await chatStrip.push('content', 'content');
+    await addBubble("Here's the plan: pricing page on marketing-site, dark mode on dashboard, fix the login bug on mobile-app. Confirm to build?");
+    await chatStrip.push('IterationEnd', 'iter');
+    await chatStrip.push('AgentDone', 'agent');
+    chatStatusText.textContent = 'idle';
+    chatStatusText.setAttribute('fill', COLORS.muted);
+
+    await ctx.beat('The user confirms. That confirmation lands in the inbox the same way — appended, then an activation — and wakes the chat agent, asleep since its last turn.');
+    await addBubble('✓ Confirm build', { user: true });
+    setChatInboxCount(1);
+    await pulseInbox(chatInboxDot);
+    await chatWake();
+    chatStatusText.textContent = 'running';
+    chatStatusText.setAttribute('fill', COLORS.iter);
+    await chatStrip.push('IterationStart', 'iter');
+    setChatInboxCount(0);
+    await chatStrip.push('UserMsg', 'user');
+
+    await ctx.beat('It composes one <b>self-contained message</b> per project — the builder only ever sees the message it\'s sent, never the chat thread it was written from — then calls <code>send_message_to_project</code> three times in one turn.');
     await chatStrip.push('thinking', 'thinking');
     await addBubble('On it — sending instructions to all three projects.');
-
+    // the self-contained messages, composed and ready — each is exactly
+    // what its project's builder will see, and nothing else.
+    await Promise.all(PROJECTS.map((p) => ctx.fade(callLines[p.key], 1, 260)));
     // mark mobile-app as already mid-iteration (busy) before the message arrives
     projState['mobile-app'].statusText.textContent = 'busy (mid-turn)';
     projState['mobile-app'].statusText.setAttribute('fill', COLORS.iter);
     await projState['mobile-app'].vStrip.push('IterationStart', 'iter');
     await projState['mobile-app'].vStrip.push('tool_call', 'tool');
 
-    await ctx.beat('Three <code>SendMessage</code> calls travel through the <b>Agent Control Plane</b> — never agent to agent. Each appends an <code>ExternalAgentNotification</code> to a project\'s inbox, the durable step.');
+    await ctx.beat('Three <code>SendMessage</code> calls travel through the <b>Agent Control Plane</b> — never agent to agent. Each appends an <code>ExternalAgentNotification</code>, carrying that project\'s self-contained message, to its inbox — the durable step.');
     await Promise.all(
       PROJECTS.map(async (p, i) => {
         await ctx.wait(i * 180);
-        await Promise.all([ctx.fade(callLines[p.key], 1, 220), chatStrip.push(`→ ${p.abbr}`, 'tool')]);
+        await chatStrip.push(`→ ${p.abbr}`, 'tool');
         await carryEnvelope('down', p.key, `SendMessage → ${p.abbr}`, 900);
         if (p.key === 'mobile-app') await ackDropped(projState[p.key]);
       }),
     );
-
     await addRow('marketing-site — notified', COLORS.notify);
     await addRow('dashboard — notified', COLORS.notify);
     await addRow('mobile-app — queued (busy)', COLORS.activation);
 
-    await ctx.beat(
-      '<b>marketing-site</b> and <b>dashboard</b> were asleep — ACP\'s activation reaches them and they start. <b>mobile-app</b> was already mid-iteration, so its activation is acknowledged and dropped; the message folds in at the next <code>IterationEnd</code>.',
-    );
+    await ctx.beat('<b>marketing-site</b>\'s activation reaches it — it wakes, and at run start admits the message onto its own trajectory. Only now can it report anything back.');
+    await wakeAndAdmit(projState['marketing-site']);
 
+    await ctx.beat(
+      '<b>marketing-site</b> posts an early progress update while the chat agent is still finishing this very turn. Its activation finds the chat agent already running — <b>acknowledged and dropped</b>; the update waits in the inbox for the next iteration boundary.',
+    );
+    await carryEnvelope('up', 'marketing-site', 'NotifyParents ← mkt', 1100);
+    setChatInboxCount(1); // appended — chatRunning is still true, so no wake yet
+    await pulseInbox(chatInboxDot);
+    await chatAckDropped();
+
+    await ctx.beat('At its <b>next iteration boundary</b> the chat agent admits that queued update — inbox back to 0 — writes it to its trajectory, then finishes this turn and goes idle.');
+    await chatStrip.push('IterationEnd', 'iter'); // closes the send-messages iteration
+    await chatStrip.push('IterationStart', 'iter'); // a fresh iteration just to admit the queued update
+    setChatInboxCount(0);
+    await chatStrip.push('Notif·mkt', 'notify');
+    await addRow('marketing-site: started — reading project state', COLORS.notify);
+    await chatStrip.push('IterationEnd', 'iter');
+    await chatStrip.push('AgentDone', 'agent');
+    chatStatusText.textContent = 'idle';
+    chatStatusText.setAttribute('fill', COLORS.muted);
+
+    await ctx.beat(
+      '<b>mobile-app</b> was already mid-iteration when its message arrived, so its activation was acknowledged and dropped — it folds the message in now, at its own next <code>IterationEnd</code>. <b>dashboard</b> is still asleep; it wakes below.',
+    );
     // mobile-app finishes its in-flight iteration, THEN admits the queued message
     await projState['mobile-app'].vStrip.push('IterationEnd', 'iter');
     await ctx.wait(200);
     projState['mobile-app'].statusText.textContent = 'admits queued msg';
     await ctx.pulse(projState['mobile-app'].anchorTop.x, projState['mobile-app'].anchorTop.y, COLORS.notify, 14, 500);
 
-    await ctx.beat('All three builders run in parallel, at their own pace, picking up their trajectory exactly where each left off. Progress and results travel back the same way, via <code>NotifyParents</code>.');
-
+    await ctx.beat('All three builders now run in parallel, at their own pace. Progress and results travel back the same way — appended to the chat agent\'s inbox, then an activation — but the chat agent is asleep again, so each one wakes it in turn.');
     const runPromise = Promise.all([
-      runBuilder('marketing-site'),
+      runBuilder('marketing-site', { tailOnly: true }),
       (async () => { await ctx.wait(900); return runBuilder('dashboard'); })(),
       (async () => { await ctx.wait(1800); return runBuilder('mobile-app', { resumed: true }); })(),
     ]);
@@ -557,41 +717,43 @@ export default {
     // Hold the "running in parallel" caption until a result actually starts
     // arriving, rather than switching on a fixed timer that can race ahead
     // of (or lag behind) the animation.
-    await firstResult;
-    await ctx.beat('Each <code>AgentDone</code> triggers one more notification — terminal status and a result summary: credits, files changed, build status.');
-    const [a, b, c] = await runPromise;
-    await chatStrip.push('reply', 'content');
-    await addBubble(
-      `Done — pricing page live, dark mode shipped. ${c.ok ? '' : "mobile-app's fix needs another pass: the build failed on tests."}`.trim(),
-    );
+    await firstResultAdmitted;
+    await ctx.beat('Each <code>AgentDone</code> triggers one more notification — terminal status and a result summary: credits, files changed, build status. The chat agent only writes its own summary reply once every result has been admitted.');
+    await runPromise;
+    await allResultsAdmitted;
 
-    await ctx.beat('Every message — down or up — rides the Agent Control Plane: appended to an inbox, then an activation to wake the recipient. Try "Send another task", or Reset to replay.', 1400);
+    await ctx.beat('Every message — down or up — rides the Agent Control Plane the same way: appended to an inbox, then an activation. Already running? Acknowledged and dropped, picked up at the next boundary. Asleep? The activation wakes it, admitted at run start. Try "Send another task", or Reset to replay.', 1400);
 
     async function followUp() {
       if (!ctx.alive) return;
       const target = projState['dashboard'];
       await addBubble('Also bump the font size on the dashboard settings page', { user: true });
-      target.statusText.textContent = 'waking…';
-      target.statusText.setAttribute('fill', COLORS.muted);
-      await chatStrip.push(`→ ${target.abbr}`, 'tool');
-      await carryEnvelope('down', 'dashboard', `SendMessage → ${target.abbr}`, 800);
-      await addRow('dashboard — notified', COLORS.notify);
-      await wakeActivation(target);
-      target.statusText.textContent = 'running';
-      target.statusText.setAttribute('fill', COLORS.iter);
-      await target.vStrip.push('IterationStart', 'iter');
-      await ctx.wait(500);
-      await target.vStrip.push('tool_call', 'tool');
-      await ctx.wait(500);
-      await target.vStrip.push('AgentDone', 'agent');
-      target.statusText.textContent = 'done';
-      target.statusText.setAttribute('fill', COLORS.tool);
-      await carryEnvelope('up', 'dashboard', `NotifyParents ← ${target.abbr}`, 800);
-      await chatActivation();
-      await chatStrip.push(`Notif·${target.abbr}`, 'notify');
-      await addRow('dashboard ✓ 1 file · 0.3cr', COLORS.tool);
-      await chatStrip.push('reply', 'content');
-      await addBubble('Done — bumped the font size on dashboard settings.');
+      await chatArrival(async () => {
+        await chatStrip.push('UserMsg', 'user');
+        await chatStrip.push('thinking', 'thinking');
+        await chatStrip.push(`→ ${target.abbr}`, 'tool');
+        await carryEnvelope('down', 'dashboard', `SendMessage → ${target.abbr}`, 800);
+        await addRow('dashboard — notified', COLORS.notify);
+        target.statusText.textContent = 'waking…';
+        target.statusText.setAttribute('fill', COLORS.muted);
+        await wakeActivation(target);
+        target.statusText.textContent = 'running';
+        target.statusText.setAttribute('fill', COLORS.iter);
+        await target.vStrip.push('IterationStart', 'iter');
+        await ctx.wait(500);
+        await target.vStrip.push('tool_call', 'tool');
+        await ctx.wait(500);
+        await target.vStrip.push('AgentDone', 'agent');
+        target.statusText.textContent = 'done';
+        target.statusText.setAttribute('fill', COLORS.tool);
+        await carryEnvelope('up', 'dashboard', `NotifyParents ← ${target.abbr}`, 800);
+        await chatArrival(async () => {
+          await chatStrip.push(`Notif·${target.abbr}`, 'notify');
+          await addRow('dashboard ✓ 1 file · 0.3cr', COLORS.tool);
+          await chatStrip.push('reply', 'content');
+          await addBubble('Done — bumped the font size on dashboard settings.');
+        });
+      });
     }
   },
 };
