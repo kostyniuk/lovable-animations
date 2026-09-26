@@ -40,6 +40,9 @@ const STATUS = {
   suspended: { color: 'activation', label: 'suspended' },
 };
 
+// 'a', 'a and b', 'a, b and c'
+const listOf = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+
 export default {
   width: 900,
   height: 480,
@@ -558,7 +561,7 @@ async function runFanOut(ctx, world) {
   const chatCx = world.chat.x + world.chat.w / 2, chatCy = world.chat.y + world.chat.h / 2;
   await ctx.pulse(chatCx, chatCy, ctx.colorOf('user'), 26, 500);
 
-  say(`chat agent calls send_message_to_project for ${chosen.map((p) => p.label).join(' and ')} — ACP delivers it`);
+  say(`chat agent calls send_message_to_project for ${listOf(chosen.map((p) => p.label))} — ACP delivers it`);
 
   await Promise.all(chosen.map((p) => deliverToProject(ctx, world, p)));
 }

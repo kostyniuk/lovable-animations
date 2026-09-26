@@ -9,7 +9,12 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.m
 
 // ---------- world layout (all in "world units", independent of pixels) ----------
 const BELT_LEN = 320, BELT_W = 46;
-const CHAT_Z = -124;
+// The chat station is a source at the belt's upstream (left) end, not a
+// station behind it — that's the only way to give it a corridor no fleet
+// node can ever end up sitting in. Its chute/return lane meet the belt just
+// inside the left roller.
+const CHAT_X = -(BELT_LEN / 2 + 66);
+const BELT_ENTRY_X = -BELT_LEN / 2 + 10;
 const NODE_Z = -70;
 const BUILD_Z = 80;
 const BUILD_DEFS = [
@@ -17,12 +22,17 @@ const BUILD_DEFS = [
   { key: 'dashboard', label: 'dashboard', x: 0 },
   { key: 'mobile', label: 'mobile-app', x: 108 },
 ];
-const NODE_XS = [-140, -70, 0, 70, 140];
+// The fleet row sits alone along the back side, evenly spaced within the
+// belt's own span — nothing else is ever positioned behind the belt now that
+// chat lives off the end, so there's no corridor to protect.
+const NODE_XS = [-120, -60, 0, 60, 120];
 
 // ---------- camera: orthographic isometric with a user-drivable orbit ----------
-const FRUSTUM_H = 150;
+const FRUSTUM_H = 172;
 const CAM_DIST = 430;
-const CAM_TARGET = new THREE.Vector3(0, 12, -12);
+// Chat now lives off the belt's left end, so the scene's bounding box is
+// wider and shifted left/less-deep than before — recentered accordingly.
+const CAM_TARGET = new THREE.Vector3(-56, 12, 12);
 const EL_MIN = THREE.MathUtils.degToRad(15);
 const EL_MAX = THREE.MathUtils.degToRad(70);
 const ZOOM_MIN = 0.55, ZOOM_MAX = 1.85;
@@ -39,6 +49,9 @@ const IDLE_CAPTIONS = [
   'a builder only admits its inbox at run start and at iteration boundaries — a mid-run message waits',
   'progress and results ride back the same way: through ACP, into the chat agent’s inbox',
 ];
+
+// 'a', 'a and b', 'a, b and c'
+const listOf = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 export default {
   width: 900,
@@ -338,17 +351,26 @@ function makeBox(w, h, d, color, roughness = 0.7, metalness = 0.15) {
   return mesh;
 }
 
-// A small "machine module": a neutral box with colored corner posts and trim
-// (a cheap stand-in for a beveled/paneled housing, since true rounded-box
-// geometry needs a three/addons import our import map can't resolve), plus a
-// status light on top instead of tinting the whole cube.
-function makeStation(w, h, d, accent) {
+// Darken/desaturate a role color for a station's body, so the body still
+// reads as that role's color family without being as loud as the full accent
+// (which is reserved for trim, the status light, and emissive glow).
+function bodyTint(hex, factor = 0.42) {
+  return new THREE.Color(hex).multiplyScalar(factor);
+}
+
+// A small "machine module": a role-colored box with colored corner posts and
+// trim (a cheap stand-in for a beveled/paneled housing, since true
+// rounded-box geometry needs a three/addons import our import map can't
+// resolve), plus a status light on top. The body itself stays color-coded by
+// role (purple/blue/slate) so the scene reads at a glance like the 2D
+// figure; asleep/running is layered on top via emissive brightness.
+function makeStation(w, h, d, bodyColor, accent) {
   const g = new THREE.Group();
-  const box = makeBox(w, h, d, '#15151a', 0.55, 0.2);
+  const box = makeBox(w, h, d, bodyColor, 0.55, 0.25);
   box.material.emissive = new THREE.Color(0x000000);
   const edges = box.children[0];
   edges.material.color = new THREE.Color(accent);
-  edges.material.opacity = 0.5;
+  edges.material.opacity = 0.6;
   g.add(box);
 
   const postSize = 2.6;
@@ -433,25 +455,38 @@ function stripeTexture(a, b) {
 // so name/status text never drifts apart or double-projects, and a single
 // overlap-avoidance pass nudges whole blocks apart when their rects collide.
 
+// A "badge" background: the role color mixed lightly over the panel color,
+// with a thin border in the same role color, so each label reads as
+// color-coded at a glance rather than a uniform dark pill. `color-mix` is a
+// live CSS function — updating `el.dataset.role` and reapplying it is how a
+// badge's tint changes later (e.g. a node badge turning yellow when it
+// starts running).
+function applyBadge(el, roleColor, panelColor) {
+  el.style.background = `color-mix(in srgb, ${roleColor} 22%, ${panelColor})`;
+  el.style.borderColor = `color-mix(in srgb, ${roleColor} 45%, transparent)`;
+}
+
 function makeLabel(overlay, text, opts = {}) {
   const el = document.createElement('div');
   el.textContent = text;
   el.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,-100%);
     font:500 10px/1.3 'JetBrains Mono',monospace;letter-spacing:.04em;color:${opts.color || '#8b8b98'};
     white-space:nowrap;pointer-events:none;opacity:${opts.opacity ?? 1};
-    background:rgba(11,11,13,.6);padding:1px 6px;border-radius:4px;
-    transition:opacity .15s,color .15s;`;
+    background:rgba(11,11,13,.6);border:1px solid transparent;padding:1px 6px;border-radius:4px;
+    transition:opacity .15s,color .15s,background .2s,border-color .2s;`;
+  if (opts.role) applyBadge(el, opts.role, opts.panel || '#131317');
   overlay.appendChild(el);
   return el;
 }
 
-function makeStackLabel(overlay, lines) {
+function makeStackLabel(overlay, lines, role, panel) {
   const el = document.createElement('div');
   el.style.cssText = `position:absolute;left:0;top:0;transform:translate(-50%,-100%);
     font:500 10px/1.35 'JetBrains Mono',monospace;letter-spacing:.04em;
     white-space:nowrap;pointer-events:none;text-align:center;
-    background:rgba(11,11,13,.64);padding:2px 7px;border-radius:4px;
-    transition:opacity .15s;`;
+    background:rgba(11,11,13,.64);border:1px solid transparent;padding:2px 7px;border-radius:4px;
+    transition:opacity .15s,background .2s,border-color .2s;`;
+  if (role) applyBadge(el, role, panel || '#131317');
   const rows = lines.map((l) => {
     const row = document.createElement('div');
     row.textContent = l.text || '';
@@ -499,7 +534,7 @@ function layoutLabels(camera, w, h, items) {
 
 function updateOverlay(camera, w, h, world) {
   const acpCallPoint = world.acpCallFollow
-    ? world.acpCallFollow.position.clone().add(new THREE.Vector3(0, 13, 0))
+    ? world.acpCallFollow.position.clone().add(new THREE.Vector3(0, 22, 0))
     : world.acpCallAnchor;
   layoutLabels(camera, w, h, [
     { point: world.acpAnchor, el: world.acpDomLabel },
@@ -545,27 +580,29 @@ function buildBelt(ctx, scene) {
 function buildChat(ctx, scene, overlay) {
   const { COLORS } = ctx;
   const w = 50, h = 30, d = 36;
-  const { group, box, light } = makeStation(w, h, d, COLORS.agent);
-  group.position.set(0, h / 2, CHAT_Z);
+  const { group, box, light } = makeStation(w, h, d, bodyTint(COLORS.agent), COLORS.agent);
+  group.position.set(CHAT_X, h / 2, 0);
   scene.add(group);
 
-  // Two lanes side by side: an outgoing chute onto the belt, and a separate
-  // return lane so results visibly arrive a different way than they left.
-  const frontZ = CHAT_Z + d / 2;
-  const sendPoint = new THREE.Vector3(-13, h * 0.5, frontZ);
-  const returnPoint = new THREE.Vector3(13, h * 0.5, frontZ);
-  scene.add(makeRamp(sendPoint, new THREE.Vector3(-13, 0.5, -BELT_W / 2), 13, COLORS.dim));
-  scene.add(makeRamp(new THREE.Vector3(13, 0.5, -BELT_W / 2), returnPoint, 13, COLORS.dim));
+  // A source at the head of the conveyor: two lanes side by side along the
+  // belt's own axis — an outgoing chute onto the belt, and a separate return
+  // lane so results visibly arrive a different way than they left, both
+  // meeting the belt just inside its left roller.
+  const frontX = CHAT_X + w / 2;
+  const sendPoint = new THREE.Vector3(frontX, h * 0.5, -13);
+  const returnPoint = new THREE.Vector3(frontX, h * 0.5, 13);
+  scene.add(makeRamp(sendPoint, new THREE.Vector3(BELT_ENTRY_X, 0.5, -13), 13, COLORS.dim));
+  scene.add(makeRamp(new THREE.Vector3(BELT_ENTRY_X, 0.5, 13), returnPoint, 13, COLORS.dim));
 
   const label = makeStackLabel(overlay, [
     { text: 'CHAT AGENT · WORKSPACE', opacity: 0.85 },
     { text: 'asleep' },
-  ]);
+  ], COLORS.agent, COLORS.panel);
 
   return {
     box, light, mat: box.material,
-    x: 0, sendPoint, returnPoint,
-    anchor: new THREE.Vector3(0, h + 20, CHAT_Z),
+    x: CHAT_X, sendPoint, returnPoint,
+    anchor: new THREE.Vector3(CHAT_X, h + 34, 0),
     nameLabel: label,
     status: 'asleep', inboxCount: 0,
   };
@@ -574,7 +611,7 @@ function buildChat(ctx, scene, overlay) {
 function buildBuilder(ctx, scene, overlay, def) {
   const { COLORS } = ctx;
   const w = 46, h = 27, d = 34;
-  const { group, box, light } = makeStation(w, h, d, COLORS.iter);
+  const { group, box, light } = makeStation(w, h, d, bodyTint(COLORS.iter), COLORS.iter);
   group.position.set(def.x, h / 2, BUILD_Z);
   scene.add(group);
 
@@ -602,7 +639,7 @@ function buildBuilder(ctx, scene, overlay, def) {
     { text: def.label.toUpperCase(), opacity: 0.85 },
     { text: 'asleep' },
     { text: '', opacity: 0 },
-  ]);
+  ], COLORS.iter, COLORS.panel);
 
   return {
     key: def.key, label: def.label, x: def.x, box, light, mat: box.material,
@@ -619,7 +656,9 @@ function buildBuilder(ctx, scene, overlay, def) {
 function buildNode(ctx, scene, overlay, i, x) {
   const { COLORS } = ctx;
   const w = 22, h = 16, d = 18;
-  const { group, box, light } = makeStation(w, h, d, COLORS.line);
+  // Neutral steel body (not tied to the activation-yellow accent), so idle
+  // nodes read as distinct hardware rather than another colored block.
+  const { group, box, light } = makeStation(w, h, d, '#3a4250', COLORS.line);
   group.position.set(x, h / 2, NODE_Z);
   scene.add(group);
 
@@ -631,7 +670,7 @@ function buildNode(ctx, scene, overlay, i, x) {
   const label = makeStackLabel(overlay, [
     { text: name, opacity: 0.85 },
     { text: '', opacity: 0 },
-  ]);
+  ], COLORS.line, COLORS.panel);
 
   return {
     name, x, box, light, mat: box.material, active: false,
@@ -650,7 +689,7 @@ function buildWorld(ctx, scene, overlay) {
   const acpDomLabel = makeLabel(overlay, 'AGENT CONTROL PLANE', { opacity: 0.8 });
   acpDomLabel.style.fontSize = '9px';
   acpDomLabel.style.letterSpacing = '.09em';
-  const acpCallLabel = makeLabel(overlay, '', { color: ctx.COLORS.notify, opacity: 0 });
+  const acpCallLabel = makeLabel(overlay, '', { color: ctx.COLORS.notify, opacity: 0, role: ctx.COLORS.notify, panel: ctx.COLORS.panel });
 
   return {
     belt, chat, builders, nodes,
@@ -667,7 +706,11 @@ function buildWorld(ctx, scene, overlay) {
 function startRenderLoop(ctx, stage, world) {
   const frame = () => {
     if (!ctx.alive) return;
-    world.belt.tex.offset.x = (ctx.now() * 0.00015) % 1;
+    // Purely decorative: the belt hums along on real (wall-clock) time, not
+    // the virtual clock, so it visibly signals "the system is alive" even
+    // while paused or held in step mode. Parcels — actual simulation state —
+    // still move only on ctx.now(), so determinism/Back are unaffected.
+    world.belt.tex.offset.x = (performance.now() * 0.00004) % 1;
     const renderer = stage._renderer, camera = stage._camera, scene = stage._scene;
     if (renderer && camera && scene) {
       const rect = stage.getBoundingClientRect();
@@ -735,20 +778,29 @@ function litColor(ctx, status, runningColor) {
   return status === 'running' ? runningColor : status === 'suspended' ? ctx.COLORS.activation : 0x000000;
 }
 
+// Drives both the top light and the body's own emissive glow, so asleep vs.
+// running reads as "dimmer body" vs. "brighter, lit body" on top of each
+// role's base color — not just a light bulb floating over a flat block.
+function setStationGlow(ctx, station, status, accentColor) {
+  const litIntensity = status === 'running' ? 1 : status === 'suspended' ? 0.6 : 0.08;
+  const bodyIntensity = status === 'running' ? 0.6 : status === 'suspended' ? 0.32 : 0.04;
+  const color = litColor(ctx, status, accentColor);
+  station.light.material.emissive = new THREE.Color(color);
+  tweenTo(ctx, station.light.material.emissiveIntensity, litIntensity, 260, (v) => { station.light.material.emissiveIntensity = v; });
+  station.box.material.emissive = new THREE.Color(status === 'asleep' ? 0x000000 : accentColor);
+  tweenTo(ctx, station.box.material.emissiveIntensity, bodyIntensity, 260, (v) => { station.box.material.emissiveIntensity = v; });
+}
+
 function setChatStatus(ctx, chat, status) {
   chat.status = status;
-  const intensity = status === 'running' ? 1 : 0.08;
-  chat.light.material.emissive = new THREE.Color(litColor(ctx, status, ctx.COLORS.agent));
-  tweenTo(ctx, chat.light.material.emissiveIntensity, intensity, 260, (v) => { chat.light.material.emissiveIntensity = v; });
+  setStationGlow(ctx, chat, status, ctx.COLORS.agent);
   chat.nameLabel.rows[1].textContent = status === 'running' ? 'running' : 'asleep · waiting for a message';
   chat.nameLabel.rows[1].style.color = status === 'running' ? ctx.COLORS.agent : '#8b8b98';
 }
 
 function setBuilderStatus(ctx, builder, status) {
   builder.status = status;
-  const intensity = status === 'running' ? 1 : status === 'suspended' ? 0.6 : 0.08;
-  builder.light.material.emissive = new THREE.Color(litColor(ctx, status, ctx.COLORS.iter));
-  tweenTo(ctx, builder.light.material.emissiveIntensity, intensity, 260, (v) => { builder.light.material.emissiveIntensity = v; });
+  setStationGlow(ctx, builder, status, ctx.COLORS.iter);
   builder.nameLabel.rows[1].textContent = status;
   builder.nameLabel.rows[1].style.color = status === 'running' ? ctx.COLORS.iter : status === 'suspended' ? ctx.COLORS.activation : '#8b8b98';
 }
@@ -763,12 +815,12 @@ function updateInboxLabel(builder) {
 
 function setNodeActive(ctx, node, builder) {
   node.active = !!builder;
-  const intensity = builder ? 1 : 0;
-  node.light.material.emissive = new THREE.Color(builder ? ctx.COLORS.activation : 0x000000);
-  tweenTo(ctx, node.light.material.emissiveIntensity, intensity, 260, (v) => { node.light.material.emissiveIntensity = v; });
+  setStationGlow(ctx, node, builder ? 'running' : 'asleep', ctx.COLORS.activation);
   node.nameLabel.rows[1].textContent = builder ? `· ${builder.label}` : '';
   node.nameLabel.rows[1].style.color = builder ? ctx.COLORS.activation : '#8b8b98';
   node.nameLabel.rows[1].style.opacity = builder ? '1' : '0';
+  // Slate badge while idle, warm yellow tint while a node is actually running.
+  applyBadge(node.nameLabel.el, builder ? ctx.COLORS.activation : ctx.COLORS.line, ctx.COLORS.panel);
 }
 
 function showAcpLabel(world, text, followObj) {
@@ -836,12 +888,15 @@ async function hopToBuilder(ctx, scene, world, fromAnchor, builder, kind = 'noti
   world.acpCallFollow = parcel;
   scene.add(parcel);
   try {
-    const drop = new THREE.Vector3(fromAnchor.x, 6, 0);
-    await travelPath(ctx, parcel, [fromAnchor, drop], 480);
+    // Hop 1: sender -> ACP — drops onto the belt at its upstream end.
+    const entry = new THREE.Vector3(BELT_ENTRY_X, 6, fromAnchor.z);
+    await travelPath(ctx, parcel, [fromAnchor, entry], 480);
     if (!ctx.alive) return;
-    await pulse3d(ctx, scene, drop, ctx.COLORS.notify, 9, 260);
+    await pulse3d(ctx, scene, entry, ctx.COLORS.notify, 9, 260);
+    // Hop 2: ACP carries it down the belt's own axis to the recipient.
+    const onBelt = new THREE.Vector3(BELT_ENTRY_X, 6, 0);
     const carry = new THREE.Vector3(builder.x, 6, 0);
-    await travelPath(ctx, parcel, [drop, carry, builder.binPoint], 680);
+    await travelPath(ctx, parcel, [entry, onBelt, carry, builder.binPoint], 680);
     if (!ctx.alive) return;
     queueInboxMessage(ctx, scene, builder, kind);
     await pulse3d(ctx, scene, builder.binPoint, ctx.COLORS.notify, 9, 300);
@@ -858,11 +913,15 @@ async function hopToChat(ctx, scene, world, builder, kind) {
   world.acpCallFollow = parcel;
   scene.add(parcel);
   try {
+    // Hop 1: builder -> ACP — drops onto the belt at the builder's position.
     const drop = new THREE.Vector3(builder.x, 6, 0);
     await travelPath(ctx, parcel, [builder.binPoint, drop], 480);
     if (!ctx.alive) return;
-    const carry = new THREE.Vector3(0, 6, 0);
-    await travelPath(ctx, parcel, [drop, carry, world.chat.returnPoint], 680);
+    // Hop 2: ACP carries it back down the belt to its upstream end, then out
+    // the return lane — a different route than the way it came in.
+    const onBelt = new THREE.Vector3(BELT_ENTRY_X, 6, 0);
+    const exit = new THREE.Vector3(BELT_ENTRY_X, 6, 13);
+    await travelPath(ctx, parcel, [drop, onBelt, exit, world.chat.returnPoint], 680);
     if (!ctx.alive) return;
     setChatStatus(ctx, world.chat, 'running');
     await pulse3d(ctx, scene, world.chat.returnPoint, kind === 'agent' ? ctx.COLORS.agent : color, 9, 300);
@@ -1045,7 +1104,7 @@ async function runFanOut3d(ctx, scene, world) {
 
   setChatStatus(ctx, world.chat, 'running');
   await pulse3d(ctx, scene, world.chat.anchor, ctx.colorOf('user'), 14, 450);
-  world.say(ctx, `chat agent calls send_message_to_project for ${chosen.map((b) => b.label).join(' and ')} — ACP delivers it`);
+  world.say(ctx, `chat agent calls send_message_to_project for ${listOf(chosen.map((b) => b.label))} — ACP delivers it`);
 
   await Promise.all(chosen.map((b) => deliverToBuilder3d(ctx, scene, world, b)));
 
